@@ -141,7 +141,7 @@ Per-process keys (`processes.<name>.*`):
 | `environment` | map | no | Env vars added on top of the supervisor's own environment, overriding inherited keys of the same name. |
 | `cron` | string | for `cron` | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`), validated at load. |
 | `on_failure` | string | no | What to do when the process ends unexpectedly (see below). |
-| `depends_on` | map | no | Gate startup on upstream outcomes; only valid for `one_shot`. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). |
+| `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service` — it is not expected to exit, so the dependent would never start. |
 
 `on_failure` values depend on the process type:
 
@@ -156,9 +156,16 @@ Per-process keys (`processes.<name>.*`):
 `exit` outcome (`success`, `failure`, or `any`) — for init/migration steps that
 must finish before dependents start. Processes with no dependencies start
 immediately and run in parallel. If an upstream exits with an outcome that does
-not satisfy the condition, the dependent is skipped (never started). The
-dependency graph is validated for cycles and unknown references before anything
-starts; a cycle or dangling reference is a fatal startup error.
+not satisfy the condition, the dependent is skipped (never started).
+
+Any process type may declare `depends_on`, so a `service` can wait on a
+migration `one_shot`. What an upstream may *be* is restricted instead: gating
+waits for the upstream to exit, and a `service` is not expected to, so
+depending on one would park the dependent for the life of the container.
+That is rejected at startup.
+
+The dependency graph is validated for cycles and unknown references before
+anything starts; a cycle or dangling reference is a fatal startup error.
 
 ### Failure policy
 

@@ -34,7 +34,8 @@ type Process struct {
 	// Env adds environment variables for the process on top of the supervisor's
 	// own environment; a key here overrides an inherited one of the same name.
 	Env map[string]string `yaml:"environment"`
-	// DependsOn gates startup on upstream outcomes; only valid for type one_shot.
+	// DependsOn gates startup on upstream outcomes. Any type may depend, but the
+	// upstream must not be a service, which is not expected to exit.
 	DependsOn map[string]Dependency `yaml:"depends_on"`
 	// Type is required: "service", "one_shot", or "cron"; see the Type* constants.
 	Type string `yaml:"type"`
@@ -127,10 +128,13 @@ func Load(path string) (*Config, error) {
 		cfg.LogOutputFormat = "console"
 	}
 	for name, proc := range cfg.Processes {
-		if len(proc.DependsOn) > 0 && proc.Type != TypeOneShot {
-			return nil, fmt.Errorf("process %q: depends_on is only allowed for type one_shot, not %q", name, proc.Type)
-		}
 		for dep, cond := range proc.DependsOn {
+			// Gating waits for the upstream to exit, so a service upstream would
+			// block the dependent for the life of the container. An unknown dep
+			// has a zero Type here; supervisor.Validate reports it.
+			if cfg.Processes[dep].Type == TypeService {
+				return nil, fmt.Errorf("process %q: cannot depends_on %q: a service is not expected to exit", name, dep)
+			}
 			switch cond.Exit {
 			case "success", "failure", "any":
 			default:

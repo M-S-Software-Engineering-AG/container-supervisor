@@ -21,11 +21,14 @@ processes:
   db:
     path: /bin/postgres
     type: service
+  migrate:
+    path: /bin/migrate
+    type: one_shot
   api:
     path: /bin/api
-    type: one_shot
+    type: service
     depends_on:
-      db:
+      migrate:
         exit: success
 `)
 	cfg, err := Load(p)
@@ -41,8 +44,8 @@ processes:
 	if cfg.Processes["api"].Path != "/bin/api" {
 		t.Errorf("api.path: got %q", cfg.Processes["api"].Path)
 	}
-	if got := cfg.Processes["api"].DependsOn["db"].Exit; got != "success" {
-		t.Errorf("api.depends_on[db].exit: got %q want success", got)
+	if got := cfg.Processes["api"].DependsOn["migrate"].Exit; got != "success" {
+		t.Errorf("api.depends_on[migrate].exit: got %q want success", got)
 	}
 	if got := cfg.Processes["db"].Type; got != TypeService {
 		t.Errorf("db.type: got %q want service", got)
@@ -162,17 +165,17 @@ func TestEnvOverride(t *testing.T) {
 }
 
 func TestEnvDefinesDependsOn(t *testing.T) {
-	t.Setenv("SUPERVISOR_PROCESSES__DB__PATH", "/bin/postgres")
-	t.Setenv("SUPERVISOR_PROCESSES__DB__TYPE", "service")
 	t.Setenv("SUPERVISOR_PROCESSES__MIGRATE__PATH", "/bin/migrate")
 	t.Setenv("SUPERVISOR_PROCESSES__MIGRATE__TYPE", "one_shot")
-	t.Setenv("SUPERVISOR_PROCESSES__MIGRATE__DEPENDS_ON__DB__EXIT", "success")
+	t.Setenv("SUPERVISOR_PROCESSES__DB__PATH", "/bin/postgres")
+	t.Setenv("SUPERVISOR_PROCESSES__DB__TYPE", "service")
+	t.Setenv("SUPERVISOR_PROCESSES__DB__DEPENDS_ON__MIGRATE__EXIT", "success")
 
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Processes["migrate"].DependsOn["db"].Exit; got != "success" {
+	if got := cfg.Processes["db"].DependsOn["migrate"].Exit; got != "success" {
 		t.Errorf("depends_on via env: got %q want success", got)
 	}
 }
@@ -213,14 +216,14 @@ func TestYAMLArgumentsStillListForm(t *testing.T) {
 func TestInvalidExit(t *testing.T) {
 	p := writeYAML(t, `
 processes:
-  db:
-    path: /bin/postgres
-    type: service
+  migrate:
+    path: /bin/migrate
+    type: one_shot
   api:
     path: /bin/api
     type: one_shot
     depends_on:
-      db:
+      migrate:
         exit: sucess
 `)
 	if _, err := Load(p); err == nil {
@@ -228,20 +231,40 @@ processes:
 	}
 }
 
-func TestDependsOnRequiresOneShot(t *testing.T) {
+// A service never exits, so gating on one would park the dependent forever.
+func TestDependsOnServiceRejected(t *testing.T) {
 	p := writeYAML(t, `
 processes:
   db:
     path: /bin/postgres
     type: service
+  seed:
+    path: /bin/seed
+    type: one_shot
+    depends_on:
+      db:
+        exit: any
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for depends_on a service, got nil")
+	}
+}
+
+// The inverse is the point of the feature: prep one_shot, then the service.
+func TestServiceDependsOnOneShot(t *testing.T) {
+	p := writeYAML(t, `
+processes:
+  migrate:
+    path: /bin/migrate
+    type: one_shot
   api:
     path: /bin/api
     type: service
     depends_on:
-      db:
+      migrate:
         exit: success
 `)
-	if _, err := Load(p); err == nil {
-		t.Fatal("expected error for depends_on on a non-one_shot process, got nil")
+	if _, err := Load(p); err != nil {
+		t.Fatalf("service depends_on one_shot should load: %v", err)
 	}
 }
