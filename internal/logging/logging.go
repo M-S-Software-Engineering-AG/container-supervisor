@@ -82,8 +82,14 @@ func NewFactory(names []string) *Factory {
 // input into lines and tags each with the process name: a console prefix, or a
 // json envelope. In json format a line that is itself a json object/array is
 // embedded under "output" (json in json); anything else becomes "message".
+// With hideLabel the name is left off entirely: the line starts at column 0 in
+// console; in json a line that is already json passes through untouched, and
+// anything else becomes a bare {"message": ...}.
 // Call Close to flush a trailing line with no newline.
-func (f *Factory) ProcessWriter(name string) io.WriteCloser {
+func (f *Factory) ProcessWriter(name string, hideLabel bool) io.WriteCloser {
+	if hideLabel {
+		return &procWriter{}
+	}
 	return &procWriter{
 		tag:   fmt.Sprintf("[%-*s] ", f.width, name),
 		label: name,
@@ -126,18 +132,25 @@ func (w *procWriter) emit(line []byte) {
 	line = bytes.TrimRight(line, "\r")
 	var rendered []byte
 	if format == "json" {
-		env := struct {
-			Process string          `json:"process"`
-			Output  json.RawMessage `json:"output,omitempty"`
-			Message string          `json:"message,omitempty"`
-		}{Process: w.label}
-		if t := bytes.TrimSpace(line); structuredJSON(t) {
-			env.Output = json.RawMessage(t)
+		t := bytes.TrimSpace(line)
+		if structuredJSON(t) && w.label == "" {
+			// No label to attach, so the envelope would add nothing: pass the
+			// child's own json through as the line.
+			rendered = append(append(make([]byte, 0, len(t)+1), t...), '\n')
 		} else {
-			env.Message = string(line)
+			env := struct {
+				Process string          `json:"process,omitempty"`
+				Output  json.RawMessage `json:"output,omitempty"`
+				Message string          `json:"message,omitempty"`
+			}{Process: w.label}
+			if structuredJSON(t) {
+				env.Output = json.RawMessage(t)
+			} else {
+				env.Message = string(line)
+			}
+			rendered, _ = json.Marshal(env)
+			rendered = append(rendered, '\n')
 		}
-		rendered, _ = json.Marshal(env)
-		rendered = append(rendered, '\n')
 	} else {
 		rendered = append(append([]byte(w.tag), line...), '\n')
 	}

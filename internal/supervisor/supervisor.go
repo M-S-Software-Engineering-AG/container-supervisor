@@ -87,7 +87,13 @@ func Run(parent context.Context, cfg *config.Config, log zerolog.Logger) error {
 	for name := range cfg.Processes {
 		names = append(names, name)
 	}
-	factory := logging.NewFactory(names)
+	tagged := make([]string, 0, len(names))
+	for _, name := range names {
+		if !cfg.Processes[name].HidesLabel() {
+			tagged = append(tagged, name)
+		}
+	}
+	factory := logging.NewFactory(tagged)
 
 	type state struct {
 		done   chan struct{}
@@ -192,8 +198,8 @@ func runProcess(ctx context.Context, name string, proc config.Process, factory *
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}
-	stdout := factory.ProcessWriter(name)
-	stderr := factory.ProcessWriter(name)
+	stdout := factory.ProcessWriter(name, proc.HidesLabel())
+	stderr := factory.ProcessWriter(name, proc.HidesLabel())
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 
 	err := cmd.Run()

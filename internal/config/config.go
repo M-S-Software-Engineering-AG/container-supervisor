@@ -42,6 +42,11 @@ type Process struct {
 	// Cron is a standard 5-field schedule expression (minute hour day-of-month
 	// month day-of-week), required and validated when Type is "cron".
 	Cron string `yaml:"cron"`
+	// HideLabel drops this process's name from its output lines: no "[name] "
+	// prefix in console (the output starts at the start of the line), and in
+	// json a line that is already json passes through unwrapped. Unset (nil)
+	// takes the global Config.HideLabels; Load resolves it. Read via HidesLabel.
+	HideLabel *Bool `yaml:"hide_label"`
 	// OnFailure controls what happens when this process ends unexpectedly.
 	// For one_shot and cron (a non-zero exit): "fail" (default) aborts the whole
 	// run, "continue" tolerates it and lets other branches proceed, "retry
@@ -74,6 +79,23 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+// Bool is a boolean that also accepts a quoted scalar, so it can be set from a
+// SUPERVISOR_ env var, which can only carry a string.
+type Bool bool
+
+func (b *Bool) UnmarshalYAML(node *yaml.Node) error {
+	v, err := strconv.ParseBool(node.Value)
+	if err != nil {
+		return fmt.Errorf("invalid boolean %q", node.Value)
+	}
+	*b = Bool(v)
+	return nil
+}
+
+// HidesLabel reports whether this process's output lines drop its name. Nil-safe:
+// a process that never set hide_label was resolved to the global default by Load.
+func (p Process) HidesLabel() bool { return p.HideLabel != nil && bool(*p.HideLabel) }
+
 // RetryCount returns n when OnFailure is "retry n", else 0. Only meaningful
 // after Load has validated the value.
 func (p Process) RetryCount() int {
@@ -92,9 +114,12 @@ type Dependency struct {
 }
 
 type Config struct {
-	LogLevel        string             `yaml:"loglevel"`
-	LogOutputFormat string             `yaml:"log_output_format"`
-	Processes       map[string]Process `yaml:"processes"`
+	LogLevel        string `yaml:"loglevel"`
+	LogOutputFormat string `yaml:"log_output_format"`
+	// HideLabels is the default for every process's HideLabel; a process that
+	// sets hide_label itself wins either way.
+	HideLabels Bool               `yaml:"hide_labels"`
+	Processes  map[string]Process `yaml:"processes"`
 }
 
 // Load reads config from the YAML file at path (skipped if empty) and overlays
@@ -128,6 +153,9 @@ func Load(path string) (*Config, error) {
 		cfg.LogOutputFormat = "console"
 	}
 	for name, proc := range cfg.Processes {
+		if proc.HideLabel == nil {
+			proc.HideLabel = &cfg.HideLabels
+		}
 		for dep, cond := range proc.DependsOn {
 			// Gating waits for the upstream to exit, so a service upstream would
 			// block the dependent for the life of the container. An unknown dep

@@ -52,6 +52,43 @@ processes:
 	}
 }
 
+func TestHideLabels(t *testing.T) {
+	p := writeYAML(t, `
+hide_labels: true
+processes:
+  a:
+    path: /bin/a
+    type: service
+  b:
+    path: /bin/b
+    type: service
+    hide_label: false
+  c:
+    path: /bin/c
+    type: service
+    hide_label: true
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"a": true, "b": false, "c": true} // global default, overridden off, set on
+	for name, w := range want {
+		if got := cfg.Processes[name].HidesLabel(); got != w {
+			t.Errorf("%s.HidesLabel(): got %v want %v", name, got, w)
+		}
+	}
+	// unset with no global default, and the nil-safe path for a hand-built Process
+	if cfg2, err := Load(writeYAML(t, "processes:\n  a:\n    path: /bin/a\n    type: service\n")); err != nil {
+		t.Fatal(err)
+	} else if cfg2.Processes["a"].HidesLabel() {
+		t.Error("a.HidesLabel(): got true want false without hide_labels")
+	}
+	if (Process{}).HidesLabel() {
+		t.Error("zero Process.HidesLabel(): got true want false")
+	}
+}
+
 func TestCronType(t *testing.T) {
 	p := writeYAML(t, "processes:\n  backup:\n    path: /bin/backup\n    type: cron\n    cron: \"0 3 * * *\"\n")
 	cfg, err := Load(p)

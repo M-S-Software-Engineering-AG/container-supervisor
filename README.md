@@ -129,6 +129,7 @@ Top-level keys:
 | --- | --- | --- |
 | `loglevel` | string | Log verbosity: `trace`, `debug`, `info` (default), `warn`, `error`. |
 | `log_output_format` | string | `console` (default) or `json`. See [Logging](#logging). |
+| `hide_labels` | bool | Default for every process's `hide_label` (below). Defaults to `false`. |
 | `processes` | map | Process name → process definition (below). |
 
 Per-process keys (`processes.<name>.*`):
@@ -141,6 +142,7 @@ Per-process keys (`processes.<name>.*`):
 | `environment` | map | no | Env vars added on top of the supervisor's own environment, overriding inherited keys of the same name. |
 | `cron` | string | for `cron` | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`), validated at load. |
 | `on_failure` | string | no | What to do when the process ends unexpectedly (see below). |
+| `hide_label` | bool | no | Overrides the global `hide_labels` for this process. Drops the process name from its output: no `[name] ` prefix in console (lines start at column 0), in json a line that is already json is passed through untouched, anything else becomes a bare `{"message": ...}`. Defaults to `false`. |
 | `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service` — it is not expected to exit, so the dependent would never start. |
 
 `on_failure` values depend on the process type:
