@@ -141,6 +141,7 @@ Per-process keys (`processes.<name>.*`):
 | `arguments` | list | no | Args passed to the executable verbatim. |
 | `environment` | map | no | Env vars added on top of the supervisor's own environment, overriding inherited keys of the same name. |
 | `cron` | string | for `cron` | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`), validated at load. |
+| `enabled` | bool | no | Defaults to `true`. `false` keeps the process from ever starting; it reports as a `failure` to anything that `depends_on` it, and never aborts the run itself. |
 | `on_failure` | string | no | What to do when the process ends unexpectedly (see below). |
 | `hide_label` | bool | no | Overrides the global `hide_labels` for this process. Drops the process name from its output: no `[name] ` prefix in console (lines start at column 0), in json a line that is already json is passed through untouched, anything else becomes a bare `{"message": ...}`. Defaults to `false`. |
 | `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service` — it is not expected to exit, so the dependent would never start. |
@@ -165,6 +166,11 @@ migration `one_shot`. What an upstream may *be* is restricted instead: gating
 waits for the upstream to exit, and a `service` is not expected to, so
 depending on one would park the dependent for the life of the container.
 That is rejected at startup.
+
+A process with `enabled: false` never starts, whatever its type. Dependents see
+it as a `failure`: those requiring `exit: success` are skipped, those requiring
+`failure` or `any` proceed. Disabling never aborts the run, regardless of
+`on_failure`.
 
 The dependency graph is validated for cycles and unknown references before
 anything starts; a cycle or dangling reference is a fatal startup error.

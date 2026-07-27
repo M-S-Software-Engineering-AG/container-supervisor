@@ -3,13 +3,28 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// yamlErrNoise matches the framing yaml.v3 wraps decode errors in: the "yaml:"
+// prefix, the "unmarshal errors:" header, and per-error "line N:" positions.
+// The line numbers point into the re-marshalled merge of file and env, not the
+// user's file, so they mislead; the offending key name carries the message.
+var yamlErrNoise = regexp.MustCompile(`(?m)^\s*(yaml: )?(unmarshal errors:)?\s*(line \d+: )?`)
+
+// cleanYAMLError renders a decode error as a single readable line.
+func cleanYAMLError(err error) string {
+	s := strings.TrimSpace(yamlErrNoise.ReplaceAllString(err.Error(), ""))
+	return strings.ReplaceAll(s, "\n", "; ")
+}
 
 // envPrefix is stripped from environment variable names; the remainder is
 // lowercased and split on "__" to address nested config keys, e.g.
@@ -39,6 +54,10 @@ type Process struct {
 	DependsOn map[string]Dependency `yaml:"depends_on"`
 	// Type is required: "service", "one_shot", or "cron"; see the Type* constants.
 	Type string `yaml:"type"`
+	// Enabled, when explicitly false, keeps this process from ever starting; it
+	// reports as a failure to anything that depends on it. Unset means enabled.
+	// Read via IsEnabled.
+	Enabled *Bool `yaml:"enabled"`
 	// Cron is a standard 5-field schedule expression (minute hour day-of-month
 	// month day-of-week), required and validated when Type is "cron".
 	Cron string `yaml:"cron"`
@@ -96,6 +115,10 @@ func (b *Bool) UnmarshalYAML(node *yaml.Node) error {
 // a process that never set hide_label was resolved to the global default by Load.
 func (p Process) HidesLabel() bool { return p.HideLabel != nil && bool(*p.HideLabel) }
 
+// IsEnabled reports whether this process may start. Nil-safe: an unset enabled
+// means true.
+func (p Process) IsEnabled() bool { return p.Enabled == nil || bool(*p.Enabled) }
+
 // RetryCount returns n when OnFailure is "retry n", else 0. Only meaningful
 // after Load has validated the value.
 func (p Process) RetryCount() int {
@@ -143,8 +166,12 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg := &Config{}
-	if err := yaml.Unmarshal(merged, cfg); err != nil {
-		return nil, fmt.Errorf("decode config: %w", err)
+	// KnownFields rejects keys the Config structs don't define, so a typo in the
+	// file (or a stray SUPERVISOR_ env var) aborts instead of being ignored.
+	dec := yaml.NewDecoder(bytes.NewReader(merged))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil && err != io.EOF {
+		return nil, fmt.Errorf("decode config: %s", cleanYAMLError(err))
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "info"

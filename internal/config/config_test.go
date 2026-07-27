@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,6 +87,36 @@ processes:
 	}
 	if (Process{}).HidesLabel() {
 		t.Error("zero Process.HidesLabel(): got true want false")
+	}
+}
+
+func TestEnabled(t *testing.T) {
+	p := writeYAML(t, `
+processes:
+  a:
+    path: /bin/a
+    type: one_shot
+  b:
+    path: /bin/b
+    type: one_shot
+    enabled: false
+  c:
+    path: /bin/c
+    type: one_shot
+    enabled: true
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"a": true, "b": false, "c": true} // unset defaults on
+	for name, w := range want {
+		if got := cfg.Processes[name].IsEnabled(); got != w {
+			t.Errorf("%s.IsEnabled(): got %v want %v", name, got, w)
+		}
+	}
+	if !(Process{}).IsEnabled() {
+		t.Error("zero Process.IsEnabled(): got false want true")
 	}
 }
 
@@ -180,6 +211,34 @@ func TestInvalidType(t *testing.T) {
 	p := writeYAML(t, "processes:\n  api:\n    path: /bin/api\n    type: daemon\n")
 	if _, err := Load(p); err == nil {
 		t.Fatal("expected error for invalid type value, got nil")
+	}
+}
+
+func TestUnknownKeyRejected(t *testing.T) {
+	cases := map[string]string{
+		"top level": "loglevl: debug\n",
+		"process":   "processes:\n  api:\n    type: service\n    pth: /bin/api\n",
+		"depends_on": "processes:\n  migrate:\n    type: one_shot\n" +
+			"  api:\n    type: service\n    depends_on:\n      migrate:\n        exit: success\n        when: later\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(writeYAML(t, body))
+			if err == nil {
+				t.Fatal("expected error for unknown key, got nil")
+			}
+			if strings.Contains(err.Error(), "line ") {
+				t.Errorf("error leaks a line number from the merged doc: %v", err)
+			}
+		})
+	}
+}
+
+func TestUnknownEnvKeyRejected(t *testing.T) {
+	p := writeYAML(t, "processes:\n  api:\n    path: /bin/api\n    type: service\n")
+	t.Setenv("SUPERVISOR_PROCESSES__API__PTH", "/bin/typo")
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for unknown env-set key, got nil")
 	}
 }
 

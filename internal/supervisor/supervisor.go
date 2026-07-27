@@ -89,7 +89,7 @@ func Run(parent context.Context, cfg *config.Config, log zerolog.Logger) error {
 	}
 	tagged := make([]string, 0, len(names))
 	for _, name := range names {
-		if !cfg.Processes[name].HidesLabel() {
+		if p := cfg.Processes[name]; p.IsEnabled() && !p.HidesLabel() {
 			tagged = append(tagged, name)
 		}
 	}
@@ -111,6 +111,15 @@ func Run(parent context.Context, cfg *config.Config, log zerolog.Logger) error {
 			defer wg.Done()
 			st := states[name]
 			defer close(st.done)
+
+			// A disabled process never starts and never aborts the run; it counts as
+			// a failure for dependents, so those requiring "success" are skipped and
+			// those requiring "failure"/"any" proceed. Its own dependencies are moot.
+			if !proc.IsEnabled() {
+				st.status = statusFailure
+				log.Info().Str("process_name", name).Msg("process disabled; not starting")
+				return
+			}
 
 			for depName, cond := range proc.DependsOn {
 				dep := states[depName]

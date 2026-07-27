@@ -153,6 +153,28 @@ func TestRunSkipsWhenConditionUnmet(t *testing.T) {
 	}
 }
 
+// TestRunDisabledReportsFailure checks a disabled process never runs, does not
+// abort the run despite the default on_failure, and reads as a failure to
+// dependents.
+func TestRunDisabledReportsFailure(t *testing.T) {
+	dir := t.TempDir()
+	order := filepath.Join(dir, "order")
+	off := config.Bool(false)
+
+	c := cfg(map[string]config.Process{
+		"off":       {Path: script(t, dir, "off", order, 0), Type: config.TypeOneShot, Enabled: &off},
+		"needsOK":   {Path: script(t, dir, "needsOK", order, 0), Type: config.TypeOneShot, DependsOn: dep("off", "success")},
+		"needsFail": {Path: script(t, dir, "needsFail", order, 0), Type: config.TypeOneShot, DependsOn: dep("off", "failure")},
+	})
+
+	if err := Run(context.Background(), c, zerolog.Nop()); err != nil {
+		t.Fatalf("Run() = %v, want nil (disabled must not abort)", err)
+	}
+	if got, _ := os.ReadFile(order); string(got) != "needsFail\n" {
+		t.Fatalf("order = %q, want needsFail only", got)
+	}
+}
+
 func TestRunFailFastCancelsSiblings(t *testing.T) {
 	dir := t.TempDir()
 	order := filepath.Join(dir, "order")
