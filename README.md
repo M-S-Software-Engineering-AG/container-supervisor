@@ -140,11 +140,12 @@ Per-process keys (`processes.<name>.*`):
 | `type` | string | yes | `service` (long-running; exiting at all aborts the run), `one_shot` (expected to finish; exit 0 is clean), or `cron` (runs on a schedule). |
 | `arguments` | list | no | Args passed to the executable verbatim. |
 | `environment` | map | no | Env vars added on top of the supervisor's own environment, overriding inherited keys of the same name. |
-| `cron` | string | for `cron` | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`), validated at load. |
+| `cron` | string | for `cron` | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`), validated at load. See [Cron semantics](#cron-semantics). |
+| `run_at_start` | bool | no | For `cron` only. Defaults to `false`. `true` also runs the process once at startup, on top of its schedule. |
 | `enabled` | bool | no | Defaults to `true`. `false` keeps the process from ever starting; it reports as a `failure` to anything that `depends_on` it, and never aborts the run itself. |
 | `on_failure` | string | no | What to do when the process ends unexpectedly (see below). |
 | `hide_label` | bool | no | Overrides the global `hide_labels` for this process. Drops the process name from its output: no `[name] ` prefix in console (lines start at column 0), in json a line that is already json is passed through untouched, anything else becomes a bare `{"message": ...}`. Defaults to `false`. |
-| `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service` — it is not expected to exit, so the dependent would never start. |
+| `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service` or a `cron` — neither is expected to exit, so the dependent would never start. |
 
 `on_failure` values depend on the process type:
 
@@ -162,9 +163,10 @@ immediately and run in parallel. If an upstream exits with an outcome that does
 not satisfy the condition, the dependent is skipped (never started).
 
 Any process type may declare `depends_on`, so a `service` can wait on a
-migration `one_shot`. What an upstream may *be* is restricted instead: gating
-waits for the upstream to exit, and a `service` is not expected to, so
-depending on one would park the dependent for the life of the container.
+migration `one_shot`, and so can a `cron`. What an upstream may *be* is
+restricted instead: gating waits for the upstream to exit, and neither a
+`service` nor a `cron` is expected to — a cron keeps running its schedule — so
+depending on either would park the dependent for the life of the container.
 That is rejected at startup.
 
 A process with `enabled: false` never starts, whatever its type. Dependents see
@@ -196,6 +198,50 @@ processes:
     type: service
     on_failure: continue    # a crash here doesn't take the container down
 ```
+
+## Cron semantics
+
+A `cron` process runs on the schedule in its `cron` field for as long as the
+container lives — it has no "done" state, so a config containing one keeps the
+supervisor running until it is signalled. (The exception is a cron whose
+`depends_on` condition goes unmet: it is skipped like any other process, and
+the run can then finish.)
+
+```yaml
+processes:
+  backup:
+    path: /bin/backup
+    type: cron
+    cron: "0 3 * * *"       # 03:00 every day
+    on_failure: continue    # a failed backup shouldn't take the container down
+  warm-cache:
+    path: /bin/warm-cache
+    type: cron
+    cron: "*/15 * * * *"    # every 15 minutes
+    run_at_start: true      # ...and once at startup, so the cache is never cold
+```
+
+The schedule is the only trigger unless `run_at_start: true` is set, in which
+case the process also runs once as soon as its dependencies are satisfied.
+`on_failure` applies per occurrence, exactly as it does for a `one_shot`: with
+the default `fail`, a single failed occurrence aborts the run.
+
+Field syntax is standard: each of the five fields is a comma-separated list of
+`*`, a number, or a `lo-hi` range, any of which may carry a `/step`. A step on
+a range counts from the low end (`10-50/7` is 10,17,24,…), and a step on a bare
+number runs to the end of the field (`5/15` in the minute field is
+5,20,35,50). Day-of-week is `0`-`6` with `0` for Sunday; `7` is rejected. When
+both `day-of-month` and `day-of-week` are restricted, a day matches if *either*
+does — the usual cron rule. Names (`MON`, `JAN`) are not supported.
+
+Schedules are evaluated in the container's local time, so set `TZ` if the
+default (UTC on a distroless image) isn't what you want. An expression that no
+date can ever satisfy — `0 0 30 2 *`, or an inverted range like `50-10` — is a
+startup error, not a process that silently never runs.
+
+Occurrences of one process never overlap. The next fire time is computed after
+the previous run finishes, so a run that overshoots its own schedule skips the
+slots it covered rather than stacking copies; missed slots are not made up.
 
 ## Logging
 

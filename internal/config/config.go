@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -61,6 +62,10 @@ type Process struct {
 	// Cron is a standard 5-field schedule expression (minute hour day-of-month
 	// month day-of-week), required and validated when Type is "cron".
 	Cron string `yaml:"cron"`
+	// RunAtStart, for a cron, runs it once as soon as its dependencies are
+	// satisfied, on top of its schedule. Defaults to false: a schedule alone
+	// means the first run is the first matching slot. Only valid for a cron.
+	RunAtStart Bool `yaml:"run_at_start"`
 	// HideLabel drops this process's name from its output lines: no "[name] "
 	// prefix in console (the output starts at the start of the line), and in
 	// json a line that is already json passes through unwrapped. Unset (nil)
@@ -184,11 +189,16 @@ func Load(path string) (*Config, error) {
 			proc.HideLabel = &cfg.HideLabels
 		}
 		for dep, cond := range proc.DependsOn {
-			// Gating waits for the upstream to exit, so a service upstream would
-			// block the dependent for the life of the container. An unknown dep
-			// has a zero Type here; supervisor.Validate reports it.
-			if cfg.Processes[dep].Type == TypeService {
+			// Gating waits for the upstream to exit, so an upstream that never
+			// does would block the dependent for the life of the container. A
+			// service is not expected to exit; a cron keeps running its
+			// schedule. An unknown dep has a zero Type here; supervisor.Validate
+			// reports it.
+			switch cfg.Processes[dep].Type {
+			case TypeService:
 				return nil, fmt.Errorf("process %q: cannot depends_on %q: a service is not expected to exit", name, dep)
+			case TypeCron:
+				return nil, fmt.Errorf("process %q: cannot depends_on %q: a cron runs on its schedule and never exits", name, dep)
 			}
 			switch cond.Exit {
 			case "success", "failure", "any":
@@ -219,12 +229,15 @@ func Load(path string) (*Config, error) {
 				if proc.Cron == "" {
 					return nil, fmt.Errorf("process %q: type cron requires a cron schedule", name)
 				}
-				if err := validateCron(proc.Cron); err != nil {
+				if _, err := ParseCron(proc.Cron); err != nil {
 					return nil, fmt.Errorf("process %q: invalid cron %q: %w", name, proc.Cron, err)
 				}
 			}
 		default:
 			return nil, fmt.Errorf("process %q: invalid type %q (want service, one_shot, or cron)", name, proc.Type)
+		}
+		if proc.Type != TypeCron && bool(proc.RunAtStart) {
+			return nil, fmt.Errorf("process %q: run_at_start is only valid for type cron", name)
 		}
 		cfg.Processes[name] = proc
 	}
@@ -246,55 +259,150 @@ var cronFields = []cronField{
 	{"day-of-week", 0, 6},
 }
 
-// validateCron checks expr is a standard 5-field cron schedule. Each field is a
-// comma-separated list of "*", a number, or a "lo-hi" range, any of which may
-// carry a "/step". It validates ranges and bounds, not scheduling semantics.
-func validateCron(expr string) error {
+// Indices into Schedule.fields, matching cronFields.
+const (
+	fMinute = iota
+	fHour
+	fDOM
+	fMonth
+	fDOW
+)
+
+// maxLookahead bounds Schedule.Next. Eight years covers the sparsest legal
+// schedule, "0 0 29 2 *" crossing 2100 — a year divisible by 4 that is not a
+// leap year, so the gap between 29 Februaries stretches to seven years.
+const maxLookahead = 8
+
+// Schedule is a parsed cron expression: a bitset of permitted values per field
+// (every field's maximum fits in 64 bits). domStar and dowStar record whether
+// the field was literally "*", which the bitset cannot express — "*" and "0-6"
+// set identical bits — and which the day rule in dayMatches needs.
+type Schedule struct {
+	fields  [5]uint64
+	domStar bool
+	dowStar bool
+}
+
+// ParseCron parses a standard 5-field cron schedule (minute hour day-of-month
+// month day-of-week). Each field is a comma-separated list of "*", a number, or
+// a "lo-hi" range, any of which may carry a "/step". A step on a bare number
+// runs to the end of the field, so "5/15" in the minute field means
+// 5,20,35,50 — as crontab(5) reads it.
+func ParseCron(expr string) (Schedule, error) {
+	var s Schedule
 	parts := strings.Fields(expr)
 	if len(parts) != len(cronFields) {
-		return fmt.Errorf("want 5 space-separated fields, got %d", len(parts))
+		return s, fmt.Errorf("want 5 space-separated fields, got %d", len(parts))
 	}
 	for i, f := range cronFields {
 		for _, term := range strings.Split(parts[i], ",") {
-			if err := validateCronTerm(term, f); err != nil {
-				return fmt.Errorf("%s field: %w", f.name, err)
+			bits, err := parseCronTerm(term, f)
+			if err != nil {
+				return s, fmt.Errorf("%s field: %w", f.name, err)
 			}
+			s.fields[i] |= bits
 		}
 	}
-	return nil
+	// "Restricted" means the field names specific days. A leading "*" is
+	// unrestricted even with a step ("*/2"), which is how crontab(5) reads it.
+	s.domStar = strings.HasPrefix(parts[fDOM], "*")
+	s.dowStar = strings.HasPrefix(parts[fDOW], "*")
+	// A schedule no date can satisfy ("0 0 30 2 *") passes every per-field
+	// check. Probing once here makes it a load error rather than a process
+	// that silently never runs.
+	if s.Next(time.Now()).IsZero() {
+		return s, fmt.Errorf("no date can ever satisfy this schedule")
+	}
+	return s, nil
 }
 
-func validateCronTerm(term string, f cronField) error {
-	base, step, hasStep := strings.Cut(term, "/")
+func parseCronTerm(term string, f cronField) (uint64, error) {
+	base, stepStr, hasStep := strings.Cut(term, "/")
+	step := 1
 	if hasStep {
-		if n, err := strconv.Atoi(step); err != nil || n < 1 {
-			return fmt.Errorf("bad step %q", step)
+		n, err := strconv.Atoi(stepStr)
+		if err != nil || n < 1 {
+			return 0, fmt.Errorf("bad step %q", stepStr)
+		}
+		step = n
+	}
+
+	lo, hi := f.min, f.max
+	if base != "*" {
+		loStr, hiStr, isRange := strings.Cut(base, "-")
+		var err error
+		if lo, err = parseCronNum(loStr, f); err != nil {
+			return 0, err
+		}
+		switch {
+		case isRange:
+			if hi, err = parseCronNum(hiStr, f); err != nil {
+				return 0, err
+			}
+			if lo > hi {
+				return 0, fmt.Errorf("inverted range %d-%d", lo, hi)
+			}
+		case hasStep:
+			// "5/15" is "from 5 to the end of the field, every 15".
+		default:
+			hi = lo
 		}
 	}
-	if base == "*" {
-		return nil
+
+	var bits uint64
+	for v := lo; v <= hi; v += step {
+		bits |= 1 << uint(v)
 	}
-	lo, hi, isRange := strings.Cut(base, "-")
-	if err := validateCronNum(lo, f); err != nil {
-		return err
-	}
-	if isRange {
-		if err := validateCronNum(hi, f); err != nil {
-			return err
-		}
-	}
-	return nil
+	return bits, nil
 }
 
-func validateCronNum(s string, f cronField) error {
+func parseCronNum(s string, f cronField) (int, error) {
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		return fmt.Errorf("bad value %q", s)
+		return 0, fmt.Errorf("bad value %q", s)
 	}
 	if n < f.min || n > f.max {
-		return fmt.Errorf("value %d out of range %d-%d", n, f.min, f.max)
+		return 0, fmt.Errorf("value %d out of range %d-%d", n, f.min, f.max)
 	}
-	return nil
+	return n, nil
+}
+
+func (s Schedule) has(field, v int) bool { return s.fields[field]&(1<<uint(v)) != 0 }
+
+// dayMatches applies the standard day rule: when both day-of-month and
+// day-of-week are restricted, a day qualifies if either one matches; when only
+// one is restricted, only that one gates.
+func (s Schedule) dayMatches(t time.Time) bool {
+	switch {
+	case s.domStar && s.dowStar:
+		return true
+	case s.domStar:
+		return s.has(fDOW, int(t.Weekday()))
+	case s.dowStar:
+		return s.has(fDOM, t.Day())
+	}
+	return s.has(fDOM, t.Day()) || s.has(fDOW, int(t.Weekday()))
+}
+
+// Next returns the first minute strictly after t that the schedule matches, or
+// the zero time if none falls within maxLookahead years. A day whose date
+// cannot match is skipped whole, which keeps the sparsest schedules at days of
+// iteration rather than minutes.
+func (s Schedule) Next(t time.Time) time.Time {
+	t = t.Truncate(time.Minute).Add(time.Minute)
+	limit := t.AddDate(maxLookahead, 0, 0)
+	for t.Before(limit) {
+		if !s.has(fMonth, int(t.Month())) || !s.dayMatches(t) {
+			// Midnight tomorrow, in t's own location so DST shifts normalise.
+			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).AddDate(0, 0, 1)
+			continue
+		}
+		if s.has(fHour, t.Hour()) && s.has(fMinute, t.Minute()) {
+			return t
+		}
+		t = t.Add(time.Minute)
+	}
+	return time.Time{}
 }
 
 func applyEnv(m map[string]any) {

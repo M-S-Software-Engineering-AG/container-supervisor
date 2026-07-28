@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeYAML(t *testing.T, body string) string {
@@ -138,18 +139,118 @@ func TestCronMissingSchedule(t *testing.T) {
 	}
 }
 
-func TestValidateCron(t *testing.T) {
-	valid := []string{"0 3 * * *", "*/15 * * * *", "0 0,12 1-15 */2 1-5", "59 23 31 12 6"}
+func TestParseCron(t *testing.T) {
+	valid := []string{"0 3 * * *", "*/15 * * * *", "0 0,12 1-15 */2 1-5", "59 23 31 12 6",
+		"10-50/7 * * * *", "5/15 * * * *", "0 0 29 2 *"}
 	for _, expr := range valid {
-		if err := validateCron(expr); err != nil {
-			t.Errorf("validateCron(%q): unexpected error: %v", expr, err)
+		if _, err := ParseCron(expr); err != nil {
+			t.Errorf("ParseCron(%q): unexpected error: %v", expr, err)
 		}
 	}
-	invalid := []string{"", "0 3 * *", "0 3 * * * *", "60 * * * *", "* 24 * * *", "* * 0 * *", "* * * 13 *", "* * * * 7", "*/0 * * * *", "1-x * * * *", "a * * * *"}
+	invalid := []string{"", "0 3 * *", "0 3 * * * *", "60 * * * *", "* 24 * * *", "* * 0 * *",
+		"* * * 13 *", "* * * * 7", "*/0 * * * *", "1-x * * * *", "a * * * *",
+		"50-10 * * * *", // inverted range: matches nothing
+		"0 0 30 2 *",    // no such date, ever
+	}
 	for _, expr := range invalid {
-		if err := validateCron(expr); err == nil {
-			t.Errorf("validateCron(%q): expected error, got nil", expr)
+		if _, err := ParseCron(expr); err == nil {
+			t.Errorf("ParseCron(%q): expected error, got nil", expr)
 		}
+	}
+}
+
+// TestScheduleNext pins the scheduling semantics: strictly-after, rollovers,
+// step forms, and the day-of-month/day-of-week rule. All times are UTC so the
+// table doesn't depend on the developer's zone.
+func TestScheduleNext(t *testing.T) {
+	at := func(y int, mo time.Month, d, h, mi int) time.Time {
+		return time.Date(y, mo, d, h, mi, 0, 0, time.UTC)
+	}
+	cases := []struct {
+		expr string
+		from time.Time
+		want time.Time
+	}{
+		// Strictly after: a match at "from" is not returned again.
+		{"* * * * *", at(2026, time.July, 28, 10, 30), at(2026, time.July, 28, 10, 31)},
+		{"0 3 * * *", at(2026, time.July, 28, 3, 0), at(2026, time.July, 29, 3, 0)},
+		{"0 3 * * *", at(2026, time.July, 28, 2, 59), at(2026, time.July, 28, 3, 0)},
+		// Rollovers: day, month, year.
+		{"0 3 * * *", at(2026, time.July, 31, 4, 0), at(2026, time.August, 1, 3, 0)},
+		{"30 0 1 1 *", at(2026, time.July, 28, 0, 0), at(2027, time.January, 1, 0, 30)},
+		// Steps count from the low end of their range, not the field minimum.
+		{"*/15 * * * *", at(2026, time.July, 28, 10, 1), at(2026, time.July, 28, 10, 15)},
+		{"10-50/7 * * * *", at(2026, time.July, 28, 10, 11), at(2026, time.July, 28, 10, 17)},
+		// A step on a bare number runs to the end of the field: 5,20,35,50.
+		{"5/15 * * * *", at(2026, time.July, 28, 10, 6), at(2026, time.July, 28, 10, 20)},
+		// Sparse but legal: 2028 is the next leap year.
+		{"0 0 29 2 *", at(2026, time.July, 28, 0, 0), at(2028, time.February, 29, 0, 0)},
+		// Only day-of-week restricted: next Monday (2026-07-28 is a Tuesday).
+		{"0 0 * * 1", at(2026, time.July, 28, 0, 0), at(2026, time.August, 3, 0, 0)},
+		// Only day-of-month restricted: the 15th, whatever weekday it is.
+		{"0 0 15 * *", at(2026, time.July, 28, 0, 0), at(2026, time.August, 15, 0, 0)},
+		// Both restricted: OR, so the 1st (a Saturday) beats the next Monday.
+		{"0 0 1 * 1", at(2026, time.July, 28, 0, 0), at(2026, time.August, 1, 0, 0)},
+		// A stepped "*" is still unrestricted, so this is day-of-month only and
+		// does not OR in every weekday.
+		{"0 0 15 * */1", at(2026, time.July, 28, 0, 0), at(2026, time.August, 15, 0, 0)},
+	}
+	for _, c := range cases {
+		s, err := ParseCron(c.expr)
+		if err != nil {
+			t.Errorf("ParseCron(%q): %v", c.expr, err)
+			continue
+		}
+		if got := s.Next(c.from); !got.Equal(c.want) {
+			t.Errorf("ParseCron(%q).Next(%s) = %s, want %s", c.expr,
+				c.from.Format(time.RFC3339), got.Format(time.RFC3339), c.want.Format(time.RFC3339))
+		}
+	}
+}
+
+// TestScheduleNextAdvances feeds Next its own output, the way the cron loop
+// does, and checks each call lands a whole slot later. It also pins the
+// sub-minute behaviour the loop depends on: a moment inside a minute resolves
+// to the boundary ahead of it, never back to the minute it is already in.
+func TestScheduleNextAdvances(t *testing.T) {
+	s, err := ParseCron("*/1 * * * *")
+	if err != nil {
+		t.Fatalf("ParseCron: %v", err)
+	}
+	prev := time.Date(2026, time.July, 28, 8, 45, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		next := s.Next(prev)
+		if d := next.Sub(prev); d != time.Minute {
+			t.Fatalf("Next(%s) = %s, advanced %v, want 1m",
+				prev.Format(time.RFC3339), next.Format(time.RFC3339), d)
+		}
+		prev = next
+	}
+
+	// A hair before the boundary still resolves forward to it.
+	almost := time.Date(2026, time.July, 28, 8, 45, 59, int(999*time.Millisecond), time.UTC)
+	if got, want := s.Next(almost), time.Date(2026, time.July, 28, 8, 46, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("Next(%s) = %s, want %s", almost.Format(time.RFC3339Nano),
+			got.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}
+
+// run_at_start only means anything for a cron; on any other type it is a config
+// mistake worth failing on rather than ignoring.
+func TestRunAtStartOnlyForCron(t *testing.T) {
+	for _, typ := range []string{"one_shot", "service"} {
+		p := writeYAML(t, "processes:\n  p:\n    path: /bin/p\n    type: "+typ+"\n    run_at_start: true\n")
+		if _, err := Load(p); err == nil {
+			t.Errorf("type %s: expected error for run_at_start, got nil", typ)
+		}
+	}
+	p := writeYAML(t, "processes:\n  p:\n    path: /bin/p\n    type: cron\n    cron: \"0 3 * * *\"\n    run_at_start: true\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("cron with run_at_start should load: %v", err)
+	}
+	if !bool(cfg.Processes["p"].RunAtStart) {
+		t.Error("p.run_at_start: got false, want true")
 	}
 }
 
@@ -343,6 +444,27 @@ processes:
 `)
 	if _, err := Load(p); err == nil {
 		t.Fatal("expected error for depends_on a service, got nil")
+	}
+}
+
+// A cron keeps running its schedule, so gating on one would park the dependent
+// forever — same reasoning as a service.
+func TestDependsOnCronRejected(t *testing.T) {
+	p := writeYAML(t, `
+processes:
+  backup:
+    path: /bin/backup
+    type: cron
+    cron: "0 3 * * *"
+  report:
+    path: /bin/report
+    type: one_shot
+    depends_on:
+      backup:
+        exit: any
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for depends_on a cron, got nil")
 	}
 }
 

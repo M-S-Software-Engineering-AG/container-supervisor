@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jehuda-ruzinski/container-supervisor/internal/config"
 	"github.com/jehuda-ruzinski/container-supervisor/internal/logging"
@@ -151,19 +152,25 @@ func Run(parent context.Context, cfg *config.Config, log zerolog.Logger) error {
 				return
 			}
 
-			st.status = runProcess(ctx, name, proc, factory, log)
-			for retries := proc.RetryCount(); st.status == statusFailure && retries > 0 && ctx.Err() == nil; retries-- {
-				log.Warn().Str("process_name", name).Int("retries_left", retries).Msg("process failed; retrying")
-				st.status = runProcess(ctx, name, proc, factory, log)
+			// A cron runs on its schedule until the run is cancelled, so it never
+			// reaches a terminal state on its own.
+			if proc.Type == config.TypeCron {
+				st.status = runCron(ctx, name, proc, factory, log)
+				if st.status == statusFailure && ctx.Err() == nil {
+					aborted.Store(true)
+					log.Error().Str("process_name", name).Msg("critical process failed; aborting run")
+					cancel()
+				}
+				return
 			}
+
+			st.status = runWithRetries(ctx, name, proc, factory, log)
 			// A process killed because the run is already aborting didn't fail on
 			// its own; don't re-report it as the cause.
 			if ctx.Err() != nil {
 				return
 			}
 			// A service exiting cleanly on its own is still an unexpected stop.
-			// ponytail: cron runs once here (no scheduler wired up yet), so a clean
-			// exit is fine like one_shot; add the schedule loop when cron is built.
 			serviceStopped := st.status == statusSuccess && proc.Type == config.TypeService
 			if (st.status == statusFailure || serviceStopped) && proc.OnFailure != "continue" {
 				aborted.Store(true)
@@ -195,6 +202,79 @@ func conditionMet(want, status string) bool {
 		return status == statusSuccess || status == statusFailure
 	}
 	return false
+}
+
+// cronNext reports when a cron process should next fire. A package var so tests
+// can substitute a fast schedule without stubbing out the wait itself, which is
+// where cancellation is handled.
+var cronNext = func(s config.Schedule, after time.Time) time.Time { return s.Next(after) }
+
+// runCron runs proc on its schedule until the run is cancelled, which it reports
+// as statusSkipped. It returns statusFailure only when the run should abort:
+// an occurrence failed and on_failure is not "continue", or the schedule itself
+// is unusable.
+func runCron(ctx context.Context, name string, proc config.Process, factory *logging.Factory, log zerolog.Logger) string {
+	sched, err := config.ParseCron(proc.Cron)
+	if err != nil {
+		// config.Load rejects this; only reachable for a config built in code.
+		log.Error().Err(err).Str("process_name", name).Str("cron", proc.Cron).Msg("invalid cron schedule")
+		return statusFailure
+	}
+
+	runNow := bool(proc.RunAtStart)
+	// from is the point each slot is computed after. It advances to the slot just
+	// fired rather than to time.Now(), because Next only guarantees "strictly
+	// after" at minute granularity: a timer that fires a hair early would leave
+	// now inside the previous minute, and computing from there would hand back
+	// the same slot and run it twice.
+	from := time.Now()
+	for ctx.Err() == nil {
+		if !runNow {
+			next := cronNext(sched, from)
+			if next.IsZero() {
+				log.Error().Str("process_name", name).Str("cron", proc.Cron).Msg("cron schedule has no next occurrence")
+				return statusFailure
+			}
+			log.Debug().Str("process_name", name).Time("next_run", next).Msg("cron scheduled")
+			timer := time.NewTimer(time.Until(next))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return statusSkipped
+			case <-timer.C:
+			}
+			from = next
+		}
+		runNow = false
+
+		status := runWithRetries(ctx, name, proc, factory, log)
+		// ponytail: an occurrence that overran its own schedule resumes from now,
+		// so it skips the slots it covered rather than firing them back to back.
+		// Missed slots are never made up; queue them here if one ever must be.
+		if now := time.Now(); now.After(from) {
+			from = now
+		}
+		// Killed because the run is shutting down: that is the cancellation, not
+		// a failure of this occurrence.
+		if ctx.Err() != nil {
+			return statusSkipped
+		}
+		if status == statusFailure && proc.OnFailure != "continue" {
+			return statusFailure
+		}
+	}
+	return statusSkipped
+}
+
+// runWithRetries runs proc, then re-runs it up to RetryCount times for as long
+// as it keeps failing.
+func runWithRetries(ctx context.Context, name string, proc config.Process, factory *logging.Factory, log zerolog.Logger) string {
+	status := runProcess(ctx, name, proc, factory, log)
+	for retries := proc.RetryCount(); status == statusFailure && retries > 0 && ctx.Err() == nil; retries-- {
+		log.Warn().Str("process_name", name).Int("retries_left", retries).Msg("process failed; retrying")
+		status = runProcess(ctx, name, proc, factory, log)
+	}
+	return status
 }
 
 func runProcess(ctx context.Context, name string, proc config.Process, factory *logging.Factory, log zerolog.Logger) string {

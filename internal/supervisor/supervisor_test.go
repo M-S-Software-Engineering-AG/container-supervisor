@@ -242,23 +242,174 @@ func TestRunServiceExitAborts(t *testing.T) {
 	}
 }
 
+// fireEvery makes every cron fire d from now, so schedule tests don't wait for a
+// real minute boundary. It replaces the schedule, not the wait, so the timer and
+// its cancellation stay under test.
+func fireEvery(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := cronNext
+	cronNext = func(config.Schedule, time.Time) time.Time { return time.Now().Add(d) }
+	t.Cleanup(func() { cronNext = orig })
+}
+
 // TestRunCronOnFailure checks that on_failure applies to cron: a failing cron
-// with the default aborts the run, while "continue" tolerates it.
+// with the default aborts the run, while "continue" keeps scheduling until the
+// run is cancelled.
 func TestRunCronOnFailure(t *testing.T) {
 	dir := t.TempDir()
+	fireEvery(t, 10*time.Millisecond)
 
 	abort := cfg(map[string]config.Process{
 		"backup": {Path: scriptBody(t, dir, "backup", "exit 1"), Type: config.TypeCron, Cron: "0 3 * * *"},
 	})
-	if err := Run(context.Background(), abort, zerolog.Nop()); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := Run(ctx, abort, zerolog.Nop()); err == nil {
 		t.Fatal("Run() = nil, want error (cron failure aborts by default)")
+	}
+	if ctx.Err() != nil {
+		t.Error("Run() only returned once the context expired; want a prompt abort")
 	}
 
 	tolerate := cfg(map[string]config.Process{
 		"backup": {Path: scriptBody(t, dir, "backup2", "exit 1"), Type: config.TypeCron, Cron: "0 3 * * *", OnFailure: "continue"},
 	})
-	if err := Run(context.Background(), tolerate, zerolog.Nop()); err != nil {
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel2()
+	if err := Run(ctx2, tolerate, zerolog.Nop()); err != nil {
 		t.Fatalf("Run() = %v, want nil (cron failure tolerated)", err)
+	}
+}
+
+// TestRunCronFiresRepeatedly is the core of the feature: a cron runs once per
+// occurrence, not once in total, and the loop ends when the run is cancelled.
+func TestRunCronFiresRepeatedly(t *testing.T) {
+	dir := t.TempDir()
+	fireEvery(t, 10*time.Millisecond)
+	count := filepath.Join(dir, "count")
+
+	c := cfg(map[string]config.Process{
+		"backup": {Path: scriptBody(t, dir, "backup", "printf x >> "+count), Type: config.TypeCron, Cron: "0 3 * * *"},
+	})
+	// Spawning a process costs far more than the 10ms schedule, so the window is
+	// sized for the spawns, not the interval. The occurrence in flight when the
+	// context expires is killed before it writes, hence >= 2 rather than a count.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := Run(ctx, c, zerolog.Nop()); err != nil {
+		t.Fatalf("Run() = %v, want nil (cron loop ends on cancel)", err)
+	}
+	if got, _ := os.ReadFile(count); len(got) < 2 {
+		t.Fatalf("cron ran %d times, want >= 2 (fired on each occurrence)", len(got))
+	}
+}
+
+// TestRunCronSkipsOverrunSlots pins the no-pile-up rule. The fake schedule is
+// minute-granular like the real one, just shorter, and each occurrence outlasts
+// several slots: the run after it must be the next slot from *now*, not one run
+// for every slot the overrun covered.
+func TestRunCronSkipsOverrunSlots(t *testing.T) {
+	const slot = 50 * time.Millisecond
+	orig := cronNext
+	cronNext = func(_ config.Schedule, after time.Time) time.Time { return after.Truncate(slot).Add(slot) }
+	t.Cleanup(func() { cronNext = orig })
+
+	dir := t.TempDir()
+	count := filepath.Join(dir, "count")
+	c := cfg(map[string]config.Process{
+		"backup": {
+			Path: scriptBody(t, dir, "backup", "printf x >> "+count+"\nsleep 0.2"),
+			Type: config.TypeCron, Cron: "0 3 * * *",
+		},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := Run(ctx, c, zerolog.Nop()); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+	// Each occupies ~200ms of the 1s window, so a handful. Queueing the covered
+	// slots instead would give roughly one run per 50ms slot.
+	got, _ := os.ReadFile(count)
+	if len(got) == 0 || len(got) > 8 {
+		t.Fatalf("cron ran %d times, want 1-8 (overrun slots skipped, not queued)", len(got))
+	}
+}
+
+// TestRunCronRunAtStart covers both sides of the flag with a schedule whose next
+// slot (03:00) will not arrive during the test: with run_at_start the process
+// runs exactly once, without it the process does not run at all. The second half
+// is the regression test for cron having once been executed unconditionally.
+func TestRunCronRunAtStart(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		atStart  config.Bool
+		wantRuns int
+	}{
+		{"run_at_start", true, 1},
+		{"schedule only", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			count := filepath.Join(dir, "count")
+			c := cfg(map[string]config.Process{
+				"backup": {
+					Path: scriptBody(t, dir, "backup", "printf x >> "+count), Type: config.TypeCron,
+					Cron: "0 3 * * *", RunAtStart: tc.atStart,
+				},
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := Run(ctx, c, zerolog.Nop()); err != nil {
+				t.Fatalf("Run() = %v, want nil", err)
+			}
+			got, _ := os.ReadFile(count)
+			if len(got) != tc.wantRuns {
+				t.Fatalf("cron ran %d times, want %d", len(got), tc.wantRuns)
+			}
+		})
+	}
+}
+
+// TestRunCronCleanShutdownMidRun guards the SIGTERM path: cancelling while an
+// occurrence is executing kills the child, which looks like a non-zero exit.
+// That is the shutdown, not a failure, so Run must not report the run aborted —
+// otherwise every container stop during a cron run exits non-zero.
+func TestRunCronCleanShutdownMidRun(t *testing.T) {
+	dir := t.TempDir()
+	fireEvery(t, 10*time.Millisecond)
+
+	// Run outlives the cancellation by the sleep's remainder: killing the shell
+	// orphans its `sleep`, which holds the output pipe open until it exits. That
+	// is pre-existing behaviour for any process type, so keep the sleep short.
+	c := cfg(map[string]config.Process{
+		"backup": {Path: scriptBody(t, dir, "backup", "sleep 1"), Type: config.TypeCron, Cron: "0 3 * * *"},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := Run(ctx, c, zerolog.Nop()); err != nil {
+		t.Fatalf("Run() = %v, want nil (cancellation mid-run is a clean stop)", err)
+	}
+}
+
+// TestRunCronCancelDuringWait checks the wait is interruptible: a cron parked on
+// a distant slot must not hold the run open past cancellation.
+func TestRunCronCancelDuringWait(t *testing.T) {
+	dir := t.TempDir()
+	c := cfg(map[string]config.Process{
+		"backup": {Path: scriptBody(t, dir, "backup", "true"), Type: config.TypeCron, Cron: "0 3 * * *"},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, c, zerolog.Nop()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not return after cancellation; the schedule wait ignores ctx")
 	}
 }
 
