@@ -23,8 +23,6 @@ var (
 	format = "console"
 )
 
-// Configure sets the output format for loggers created afterwards. Anything
-// other than "json" produces human-readable console output.
 func Configure(outputFormat string) {
 	format = outputFormat
 }
@@ -34,8 +32,6 @@ type prefixWriter struct {
 }
 
 func (pw prefixWriter) Write(p []byte) (int, error) {
-	// ponytail: one global lock keeps concurrent process lines from
-	// interleaving; split per-writer only if logging ever bottlenecks.
 	mu.Lock()
 	defer mu.Unlock()
 	buf := append(append(make([]byte, 0, len(pw.prefix)+len(p)), pw.prefix...), p...)
@@ -45,15 +41,11 @@ func (pw prefixWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// noColor disables ANSI unless the sink is a terminal.
 func noColor() bool {
 	f, ok := out.(*os.File)
 	return !(ok && isatty.IsTerminal(f.Fd()))
 }
 
-// Supervisor returns the logger for the supervisor's own structured events.
-// It is tagged "[supervisor]" in console format or process=supervisor in
-// json; name the subject process with a field, e.g. .Str("process_name", n).
 func Supervisor() zerolog.Logger {
 	if format == "json" {
 		return zerolog.New(prefixWriter{}).With().Timestamp().Str("process", "supervisor").Logger()
@@ -62,8 +54,6 @@ func Supervisor() zerolog.Logger {
 	return zerolog.New(dst).With().Timestamp().Logger()
 }
 
-// Factory tags child-process output lines, padding console name tags to the
-// width of the longest process name, e.g. "[a   ]" alongside "[abcd]".
 type Factory struct {
 	width int
 }
@@ -78,14 +68,6 @@ func NewFactory(names []string) *Factory {
 	return &Factory{width: w}
 }
 
-// ProcessWriter returns a writer for a child process's output stream. It splits
-// input into lines and tags each with the process name: a console prefix, or a
-// json envelope. In json format a line that is itself a json object/array is
-// embedded under "output" (json in json); anything else becomes "message".
-// With hideLabel the name is left off entirely: the line starts at column 0 in
-// console; in json a line that is already json passes through untouched, and
-// anything else becomes a bare {"message": ...}.
-// Call Close to flush a trailing line with no newline.
 func (f *Factory) ProcessWriter(name string, hideLabel bool) io.WriteCloser {
 	if hideLabel {
 		return &procWriter{}
@@ -134,8 +116,6 @@ func (w *procWriter) emit(line []byte) {
 	if format == "json" {
 		t := bytes.TrimSpace(line)
 		if structuredJSON(t) && w.label == "" {
-			// No label to attach, so the envelope would add nothing: pass the
-			// child's own json through as the line.
 			rendered = append(append(make([]byte, 0, len(t)+1), t...), '\n')
 		} else {
 			env := struct {
@@ -159,7 +139,6 @@ func (w *procWriter) emit(line []byte) {
 	mu.Unlock()
 }
 
-// structuredJSON reports whether line is a JSON object or array.
 func structuredJSON(line []byte) bool {
 	if len(line) == 0 || (line[0] != '{' && line[0] != '[') {
 		return false

@@ -35,7 +35,7 @@ func TestHideLabel(t *testing.T) {
 	for _, tc := range []struct{ format, line, want string }{
 		{"console", "plain", "plain\n"},
 		{"json", "plain", `{"message":"plain"}` + "\n"},
-		{"json", `{"lvl":"info"}`, `{"lvl":"info"}` + "\n"}, // passed through, not wrapped
+		{"json", `{"lvl":"info"}`, `{"lvl":"info"}` + "\n"},
 	} {
 		var buf bytes.Buffer
 		oldOut, oldFmt := out, format
@@ -74,7 +74,7 @@ func TestProcessWriterJSON(t *testing.T) {
 	w := NewFactory([]string{"api"}).ProcessWriter("api", false)
 	w.Write([]byte(`{"lvl":"info","msg":"up"}` + "\n"))
 	w.Write([]byte("plain text\n"))
-	w.Write([]byte("no newline yet")) // flushed by Close
+	w.Write([]byte("no newline yet"))
 	w.Close()
 
 	got := strings.Split(strings.TrimSpace(buf.String()), "\n")
@@ -97,7 +97,7 @@ func TestProcessWriterConsole(t *testing.T) {
 	defer func() { out, format = oldOut, oldFmt }()
 
 	w := NewFactory([]string{"api", "worker"}).ProcessWriter("api", false)
-	w.Write([]byte(`{"lvl":"info"}` + "\n")) // raw passthrough in console
+	w.Write([]byte(`{"lvl":"info"}` + "\n"))
 	w.Close()
 
 	if got := buf.String(); got != "[api   ] {\"lvl\":\"info\"}\n" {

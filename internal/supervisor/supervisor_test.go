@@ -50,8 +50,6 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// script writes an executable shell script that appends label to orderFile,
-// then exits with the given code, and returns its path.
 func script(t *testing.T, dir, label, orderFile string, exitCode int) string {
 	t.Helper()
 	path := filepath.Join(dir, label+".sh")
@@ -69,7 +67,6 @@ func itoa(n int) string {
 	return string(rune('0' + n))
 }
 
-// scriptBody writes an executable script with the given shell body.
 func scriptBody(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name+".sh")
@@ -121,7 +118,7 @@ func TestRunPassesEnv(t *testing.T) {
 	out := filepath.Join(dir, "env")
 
 	c := cfg(map[string]config.Process{
-		"p": {Path: scriptBody(t, dir, "p", `echo "$GREETING" > ` + out), Env: map[string]string{"GREETING": "hello"}, Type: config.TypeOneShot},
+		"p": {Path: scriptBody(t, dir, "p", `echo "$GREETING" > `+out), Env: map[string]string{"GREETING": "hello"}, Type: config.TypeOneShot},
 	})
 
 	if err := Run(context.Background(), c, zerolog.Nop()); err != nil {
@@ -139,8 +136,8 @@ func TestRunSkipsWhenConditionUnmet(t *testing.T) {
 	order := filepath.Join(dir, "order")
 
 	c := cfg(map[string]config.Process{
-		"up":   {Path: script(t, dir, "up", order, 1), OnFailure: "continue"},             // exits non-zero, tolerated
-		"down": {Path: script(t, dir, "down", order, 0), DependsOn: dep("up", "success")}, // needs success
+		"up":   {Path: script(t, dir, "up", order, 1), OnFailure: "continue"},
+		"down": {Path: script(t, dir, "down", order, 0), DependsOn: dep("up", "success")},
 	})
 
 	if err := Run(context.Background(), c, zerolog.Nop()); err != nil {
@@ -153,9 +150,6 @@ func TestRunSkipsWhenConditionUnmet(t *testing.T) {
 	}
 }
 
-// TestRunDisabledReportsFailure checks a disabled process never runs, does not
-// abort the run despite the default on_failure, and reads as a failure to
-// dependents.
 func TestRunDisabledReportsFailure(t *testing.T) {
 	dir := t.TempDir()
 	order := filepath.Join(dir, "order")
@@ -180,7 +174,7 @@ func TestRunFailFastCancelsSiblings(t *testing.T) {
 	order := filepath.Join(dir, "order")
 
 	c := cfg(map[string]config.Process{
-		"crash": {Path: scriptBody(t, dir, "crash", "exit 1")}, // default on_failure=fail
+		"crash": {Path: scriptBody(t, dir, "crash", "exit 1")},
 		"slow":  {Path: scriptBody(t, dir, "slow", "sleep 5\necho slow >> "+order)},
 	})
 
@@ -210,8 +204,6 @@ func TestRunContinueToleratesFailure(t *testing.T) {
 	}
 }
 
-// TestRunServiceRestart checks that a service with on_failure "restart" is
-// rerun each time it exits, until the run is cancelled.
 func TestRunServiceRestart(t *testing.T) {
 	dir := t.TempDir()
 	count := filepath.Join(dir, "count")
@@ -230,8 +222,6 @@ func TestRunServiceRestart(t *testing.T) {
 	}
 }
 
-// TestRunServiceExitAborts checks that a service with on_failure "exit" (the
-// default) aborts the run when it stops.
 func TestRunServiceExitAborts(t *testing.T) {
 	dir := t.TempDir()
 	c := cfg(map[string]config.Process{
@@ -242,9 +232,6 @@ func TestRunServiceExitAborts(t *testing.T) {
 	}
 }
 
-// fireEvery makes every cron fire d from now, so schedule tests don't wait for a
-// real minute boundary. It replaces the schedule, not the wait, so the timer and
-// its cancellation stay under test.
 func fireEvery(t *testing.T, d time.Duration) {
 	t.Helper()
 	orig := cronNext
@@ -252,9 +239,6 @@ func fireEvery(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { cronNext = orig })
 }
 
-// TestRunCronOnFailure checks that on_failure applies to cron: a failing cron
-// with the default aborts the run, while "continue" keeps scheduling until the
-// run is cancelled.
 func TestRunCronOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	fireEvery(t, 10*time.Millisecond)
@@ -281,8 +265,6 @@ func TestRunCronOnFailure(t *testing.T) {
 	}
 }
 
-// TestRunCronFiresRepeatedly is the core of the feature: a cron runs once per
-// occurrence, not once in total, and the loop ends when the run is cancelled.
 func TestRunCronFiresRepeatedly(t *testing.T) {
 	dir := t.TempDir()
 	fireEvery(t, 10*time.Millisecond)
@@ -291,9 +273,7 @@ func TestRunCronFiresRepeatedly(t *testing.T) {
 	c := cfg(map[string]config.Process{
 		"backup": {Path: scriptBody(t, dir, "backup", "printf x >> "+count), Type: config.TypeCron, Cron: "0 3 * * *"},
 	})
-	// Spawning a process costs far more than the 10ms schedule, so the window is
-	// sized for the spawns, not the interval. The occurrence in flight when the
-	// context expires is killed before it writes, hence >= 2 rather than a count.
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := Run(ctx, c, zerolog.Nop()); err != nil {
@@ -304,10 +284,6 @@ func TestRunCronFiresRepeatedly(t *testing.T) {
 	}
 }
 
-// TestRunCronSkipsOverrunSlots pins the no-pile-up rule. The fake schedule is
-// minute-granular like the real one, just shorter, and each occurrence outlasts
-// several slots: the run after it must be the next slot from *now*, not one run
-// for every slot the overrun covered.
 func TestRunCronSkipsOverrunSlots(t *testing.T) {
 	const slot = 50 * time.Millisecond
 	orig := cronNext
@@ -327,18 +303,13 @@ func TestRunCronSkipsOverrunSlots(t *testing.T) {
 	if err := Run(ctx, c, zerolog.Nop()); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
-	// Each occupies ~200ms of the 1s window, so a handful. Queueing the covered
-	// slots instead would give roughly one run per 50ms slot.
+
 	got, _ := os.ReadFile(count)
 	if len(got) == 0 || len(got) > 8 {
 		t.Fatalf("cron ran %d times, want 1-8 (overrun slots skipped, not queued)", len(got))
 	}
 }
 
-// TestRunCronRunAtStart covers both sides of the flag with a schedule whose next
-// slot (03:00) will not arrive during the test: with run_at_start the process
-// runs exactly once, without it the process does not run at all. The second half
-// is the regression test for cron having once been executed unconditionally.
 func TestRunCronRunAtStart(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -370,17 +341,10 @@ func TestRunCronRunAtStart(t *testing.T) {
 	}
 }
 
-// TestRunCronCleanShutdownMidRun guards the SIGTERM path: cancelling while an
-// occurrence is executing kills the child, which looks like a non-zero exit.
-// That is the shutdown, not a failure, so Run must not report the run aborted —
-// otherwise every container stop during a cron run exits non-zero.
 func TestRunCronCleanShutdownMidRun(t *testing.T) {
 	dir := t.TempDir()
 	fireEvery(t, 10*time.Millisecond)
 
-	// Run outlives the cancellation by the sleep's remainder: killing the shell
-	// orphans its `sleep`, which holds the output pipe open until it exits. That
-	// is pre-existing behaviour for any process type, so keep the sleep short.
 	c := cfg(map[string]config.Process{
 		"backup": {Path: scriptBody(t, dir, "backup", "sleep 1"), Type: config.TypeCron, Cron: "0 3 * * *"},
 	})
@@ -391,8 +355,6 @@ func TestRunCronCleanShutdownMidRun(t *testing.T) {
 	}
 }
 
-// TestRunCronCancelDuringWait checks the wait is interruptible: a cron parked on
-// a distant slot must not hold the run open past cancellation.
 func TestRunCronCancelDuringWait(t *testing.T) {
 	dir := t.TempDir()
 	c := cfg(map[string]config.Process{
@@ -413,10 +375,43 @@ func TestRunCronCancelDuringWait(t *testing.T) {
 	}
 }
 
-// TestRunOneShotDependencyOutcomes checks that a one_shot b reacts correctly to
-// every outcome of the one_shot a it depends on: it runs when a's exit matches
-// the required condition, and is skipped otherwise. a uses on_failure=continue
-// so a non-zero exit doesn't abort the run before b's turn.
+func TestRunTickerFiresRepeatedly(t *testing.T) {
+	dir := t.TempDir()
+	count := filepath.Join(dir, "count")
+
+	c := cfg(map[string]config.Process{
+		"poll": {Path: scriptBody(t, dir, "poll", "printf x >> "+count), Type: config.TypeTicker, Ticker: "@every 10ms"},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := Run(ctx, c, zerolog.Nop()); err != nil {
+		t.Fatalf("Run() = %v, want nil (ticker loop ends on cancel)", err)
+	}
+	if got, _ := os.ReadFile(count); len(got) < 2 {
+		t.Fatalf("ticker ran %d times, want >= 2 (fired on each interval)", len(got))
+	}
+}
+
+func TestRunTickerRunAtStart(t *testing.T) {
+	dir := t.TempDir()
+	count := filepath.Join(dir, "count")
+
+	c := cfg(map[string]config.Process{
+		"poll": {
+			Path: scriptBody(t, dir, "poll", "printf x >> "+count),
+			Type: config.TypeTicker, Ticker: "@every 1hour", RunAtStart: true,
+		},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := Run(ctx, c, zerolog.Nop()); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+	if got, _ := os.ReadFile(count); len(got) != 1 {
+		t.Fatalf("ticker ran %d times, want 1 (run_at_start only, interval not yet due)", len(got))
+	}
+}
+
 func TestRunOneShotDependencyOutcomes(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -452,8 +447,6 @@ func TestRunOneShotDependencyOutcomes(t *testing.T) {
 	}
 }
 
-// TestRunOneShotFanIn checks that c waits for both a and b, which have no
-// dependencies and so start concurrently. c must run only after both finish.
 func TestRunOneShotFanIn(t *testing.T) {
 	dir := t.TempDir()
 	order := filepath.Join(dir, "order")
@@ -468,7 +461,7 @@ func TestRunOneShotFanIn(t *testing.T) {
 	if err := Run(context.Background(), c, zerolog.Nop()); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
-	// a and b race, so either order before c; c is always last.
+
 	if got, _ := os.ReadFile(order); string(got) != "a\nb\nc\n" && string(got) != "b\na\nc\n" {
 		t.Fatalf("order = %q, want a and b (either order) before c", got)
 	}
@@ -478,7 +471,6 @@ func TestRunRetrySucceedsAfterFailures(t *testing.T) {
 	dir := t.TempDir()
 	count := filepath.Join(dir, "count")
 
-	// Appends a byte per run, fails until the 3rd attempt then exits 0.
 	body := "printf x >> " + count + "\n" +
 		"[ $(wc -c < " + count + ") -ge 3 ] && exit 0\nexit 1"
 	c := cfg(map[string]config.Process{

@@ -74,13 +74,13 @@ processes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"a": true, "b": false, "c": true} // global default, overridden off, set on
+	want := map[string]bool{"a": true, "b": false, "c": true}
 	for name, w := range want {
 		if got := cfg.Processes[name].HidesLabel(); got != w {
 			t.Errorf("%s.HidesLabel(): got %v want %v", name, got, w)
 		}
 	}
-	// unset with no global default, and the nil-safe path for a hand-built Process
+
 	if cfg2, err := Load(writeYAML(t, "processes:\n  a:\n    path: /bin/a\n    type: service\n")); err != nil {
 		t.Fatal(err)
 	} else if cfg2.Processes["a"].HidesLabel() {
@@ -110,7 +110,7 @@ processes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{"a": true, "b": false, "c": true} // unset defaults on
+	want := map[string]bool{"a": true, "b": false, "c": true}
 	for name, w := range want {
 		if got := cfg.Processes[name].IsEnabled(); got != w {
 			t.Errorf("%s.IsEnabled(): got %v want %v", name, got, w)
@@ -149,8 +149,8 @@ func TestParseCron(t *testing.T) {
 	}
 	invalid := []string{"", "0 3 * *", "0 3 * * * *", "60 * * * *", "* 24 * * *", "* * 0 * *",
 		"* * * 13 *", "* * * * 7", "*/0 * * * *", "1-x * * * *", "a * * * *",
-		"50-10 * * * *", // inverted range: matches nothing
-		"0 0 30 2 *",    // no such date, ever
+		"50-10 * * * *",
+		"0 0 30 2 *",
 	}
 	for _, expr := range invalid {
 		if _, err := ParseCron(expr); err == nil {
@@ -159,9 +159,6 @@ func TestParseCron(t *testing.T) {
 	}
 }
 
-// TestScheduleNext pins the scheduling semantics: strictly-after, rollovers,
-// step forms, and the day-of-month/day-of-week rule. All times are UTC so the
-// table doesn't depend on the developer's zone.
 func TestScheduleNext(t *testing.T) {
 	at := func(y int, mo time.Month, d, h, mi int) time.Time {
 		return time.Date(y, mo, d, h, mi, 0, 0, time.UTC)
@@ -171,28 +168,18 @@ func TestScheduleNext(t *testing.T) {
 		from time.Time
 		want time.Time
 	}{
-		// Strictly after: a match at "from" is not returned again.
 		{"* * * * *", at(2026, time.July, 28, 10, 30), at(2026, time.July, 28, 10, 31)},
 		{"0 3 * * *", at(2026, time.July, 28, 3, 0), at(2026, time.July, 29, 3, 0)},
 		{"0 3 * * *", at(2026, time.July, 28, 2, 59), at(2026, time.July, 28, 3, 0)},
-		// Rollovers: day, month, year.
 		{"0 3 * * *", at(2026, time.July, 31, 4, 0), at(2026, time.August, 1, 3, 0)},
 		{"30 0 1 1 *", at(2026, time.July, 28, 0, 0), at(2027, time.January, 1, 0, 30)},
-		// Steps count from the low end of their range, not the field minimum.
 		{"*/15 * * * *", at(2026, time.July, 28, 10, 1), at(2026, time.July, 28, 10, 15)},
 		{"10-50/7 * * * *", at(2026, time.July, 28, 10, 11), at(2026, time.July, 28, 10, 17)},
-		// A step on a bare number runs to the end of the field: 5,20,35,50.
 		{"5/15 * * * *", at(2026, time.July, 28, 10, 6), at(2026, time.July, 28, 10, 20)},
-		// Sparse but legal: 2028 is the next leap year.
 		{"0 0 29 2 *", at(2026, time.July, 28, 0, 0), at(2028, time.February, 29, 0, 0)},
-		// Only day-of-week restricted: next Monday (2026-07-28 is a Tuesday).
 		{"0 0 * * 1", at(2026, time.July, 28, 0, 0), at(2026, time.August, 3, 0, 0)},
-		// Only day-of-month restricted: the 15th, whatever weekday it is.
 		{"0 0 15 * *", at(2026, time.July, 28, 0, 0), at(2026, time.August, 15, 0, 0)},
-		// Both restricted: OR, so the 1st (a Saturday) beats the next Monday.
 		{"0 0 1 * 1", at(2026, time.July, 28, 0, 0), at(2026, time.August, 1, 0, 0)},
-		// A stepped "*" is still unrestricted, so this is day-of-month only and
-		// does not OR in every weekday.
 		{"0 0 15 * */1", at(2026, time.July, 28, 0, 0), at(2026, time.August, 15, 0, 0)},
 	}
 	for _, c := range cases {
@@ -208,10 +195,6 @@ func TestScheduleNext(t *testing.T) {
 	}
 }
 
-// TestScheduleNextAdvances feeds Next its own output, the way the cron loop
-// does, and checks each call lands a whole slot later. It also pins the
-// sub-minute behaviour the loop depends on: a moment inside a minute resolves
-// to the boundary ahead of it, never back to the minute it is already in.
 func TestScheduleNextAdvances(t *testing.T) {
 	s, err := ParseCron("*/1 * * * *")
 	if err != nil {
@@ -227,7 +210,6 @@ func TestScheduleNextAdvances(t *testing.T) {
 		prev = next
 	}
 
-	// A hair before the boundary still resolves forward to it.
 	almost := time.Date(2026, time.July, 28, 8, 45, 59, int(999*time.Millisecond), time.UTC)
 	if got, want := s.Next(almost), time.Date(2026, time.July, 28, 8, 46, 0, 0, time.UTC); !got.Equal(want) {
 		t.Errorf("Next(%s) = %s, want %s", almost.Format(time.RFC3339Nano),
@@ -235,8 +217,6 @@ func TestScheduleNextAdvances(t *testing.T) {
 	}
 }
 
-// run_at_start only means anything for a cron; on any other type it is a config
-// mistake worth failing on rather than ignoring.
 func TestRunAtStartOnlyForCron(t *testing.T) {
 	for _, typ := range []string{"one_shot", "service"} {
 		p := writeYAML(t, "processes:\n  p:\n    path: /bin/p\n    type: "+typ+"\n    run_at_start: true\n")
@@ -258,6 +238,87 @@ func TestCronInvalidSchedule(t *testing.T) {
 	p := writeYAML(t, "processes:\n  backup:\n    path: /bin/backup\n    type: cron\n    cron: \"nonsense\"\n")
 	if _, err := Load(p); err == nil {
 		t.Fatal("expected error for invalid cron schedule, got nil")
+	}
+}
+
+func TestParseEvery(t *testing.T) {
+	valid := map[string]time.Duration{
+		"@every 5sec":      5 * time.Second,
+		"@every 5s":        5 * time.Second,
+		"@every 30secs":    30 * time.Second,
+		"@every 1second":   time.Second,
+		"@every 2minutes":  2 * time.Minute,
+		"@every 90min":     90 * time.Minute,
+		"@every 1hour":     time.Hour,
+		"@every 250ms":     250 * time.Millisecond,
+		"@every 1min30sec": 90 * time.Second,
+		"5sec":             5 * time.Second,
+		"  @every  5sec ":  5 * time.Second,
+	}
+	for expr, want := range valid {
+		s, err := ParseEvery(expr)
+		if err != nil {
+			t.Errorf("ParseEvery(%q): unexpected error: %v", expr, err)
+			continue
+		}
+		from := time.Date(2026, time.July, 28, 10, 30, 0, 0, time.UTC)
+		if got := s.Next(from).Sub(from); got != want {
+			t.Errorf("ParseEvery(%q): interval %v, want %v", expr, got, want)
+		}
+	}
+	invalid := []string{"", "@every", "@every 5", "@every sec", "@every 0sec", "@every -5sec",
+		"@every 5 5 sec", "@every fivesec", "0 3 * * *"}
+	for _, expr := range invalid {
+		if _, err := ParseEvery(expr); err == nil {
+			t.Errorf("ParseEvery(%q): expected error, got nil", expr)
+		}
+	}
+}
+
+func TestTickerNextAdvances(t *testing.T) {
+	s, err := ParseEvery("@every 5sec")
+	if err != nil {
+		t.Fatalf("ParseEvery: %v", err)
+	}
+	prev := time.Date(2026, time.July, 28, 10, 30, 12, 500, time.UTC)
+	for i := 0; i < 3; i++ {
+		next := s.Next(prev)
+		if d := next.Sub(prev); d != 5*time.Second {
+			t.Fatalf("Next(%s) advanced %v, want 5s", prev.Format(time.RFC3339Nano), d)
+		}
+		prev = next
+	}
+}
+
+func TestTickerType(t *testing.T) {
+	p := writeYAML(t, "processes:\n  poll:\n    path: /bin/poll\n    type: ticker\n    ticker: \"@every 5sec\"\n    run_at_start: true\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Processes["poll"].Ticker; got != "@every 5sec" {
+		t.Errorf("poll.ticker: got %q want %q", got, "@every 5sec")
+	}
+
+	bad := map[string]string{
+		"missing interval":       "processes:\n  poll:\n    path: /bin/poll\n    type: ticker\n",
+		"invalid interval":       "processes:\n  poll:\n    path: /bin/poll\n    type: ticker\n    ticker: \"@every nonsense\"\n",
+		"cron key on ticker":     "processes:\n  poll:\n    path: /bin/poll\n    type: ticker\n    ticker: \"@every 5sec\"\n    cron: \"0 3 * * *\"\n",
+		"ticker key on cron":     "processes:\n  poll:\n    path: /bin/poll\n    type: cron\n    cron: \"0 3 * * *\"\n    ticker: \"@every 5sec\"\n",
+		"ticker key on one_shot": "processes:\n  poll:\n    path: /bin/poll\n    type: one_shot\n    ticker: \"@every 5sec\"\n",
+	}
+	for name, yaml := range bad {
+		if _, err := Load(writeYAML(t, yaml)); err == nil {
+			t.Errorf("%s: expected error, got nil", name)
+		}
+	}
+}
+
+func TestDependsOnTickerRejected(t *testing.T) {
+	p := writeYAML(t, "processes:\n  poll:\n    path: /bin/poll\n    type: ticker\n    ticker: \"@every 5sec\"\n"+
+		"  app:\n    path: /bin/app\n    type: service\n    depends_on:\n      poll:\n        exit: success\n")
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for depends_on a ticker, got nil")
 	}
 }
 
@@ -428,7 +489,6 @@ processes:
 	}
 }
 
-// A service never exits, so gating on one would park the dependent forever.
 func TestDependsOnServiceRejected(t *testing.T) {
 	p := writeYAML(t, `
 processes:
@@ -447,8 +507,6 @@ processes:
 	}
 }
 
-// A cron keeps running its schedule, so gating on one would park the dependent
-// forever — same reasoning as a service.
 func TestDependsOnCronRejected(t *testing.T) {
 	p := writeYAML(t, `
 processes:
@@ -468,7 +526,6 @@ processes:
 	}
 }
 
-// The inverse is the point of the feature: prep one_shot, then the service.
 func TestServiceDependsOnOneShot(t *testing.T) {
 	p := writeYAML(t, `
 processes:

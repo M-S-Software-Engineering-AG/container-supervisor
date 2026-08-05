@@ -11,9 +11,10 @@ before the main process. A periodic job that belongs next to a service shouldn't
 have to become a separate cronjob-per-container.
 
 Container Supervisor covers those cases: run the prep step as a `one_shot` that
-the main service `depends_on`, or schedule recurring work as a `cron` process —
-all inside the one container, without pulling in an init system or a second
-orchestration layer.
+the main service `depends_on`, or schedule recurring work as a `cron` process
+(or a `ticker`, for intervals shorter than cron's one-minute floor) — all inside
+the one container, without pulling in an init system or a second orchestration
+layer.
 
 ## Compared to supervisord
 
@@ -26,7 +27,7 @@ Container Supervisor deliberately does less. It is a single static binary that
 runs on distroless images with no shell, Python runtime, or package manager —
 where supervisord's Python dependency doesn't fit. Beyond the minimal footprint,
 its focus is process orchestration for the lifetime of a container: a dependency
-graph (`depends_on`), one-shot vs. service vs. cron process types, and per-process
+graph (`depends_on`), one-shot vs. service vs. cron vs. ticker process types, and per-process
 failure policies, all in one YAML file. Trading breadth for a small, dependency-free
 binary is the point.
 
@@ -137,22 +138,23 @@ Per-process keys (`processes.<name>.*`):
 | Key | Type | Required | Used for |
 | --- | --- | --- | --- |
 | `path` | string | yes | Path to the executable to run. |
-| `type` | string | yes | `service` (long-running; exiting at all aborts the run), `one_shot` (expected to finish; exit 0 is clean), or `cron` (runs on a schedule). |
+| `type` | string | yes | `service` (long-running; exiting at all aborts the run), `one_shot` (expected to finish; exit 0 is clean), `cron` (runs on a wall-clock schedule), or `ticker` (runs on a fixed interval). |
 | `arguments` | list | no | Args passed to the executable verbatim. |
 | `environment` | map | no | Env vars added on top of the supervisor's own environment, overriding inherited keys of the same name. |
 | `cron` | string | for `cron` | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`), validated at load. See [Cron semantics](#cron-semantics). |
-| `run_at_start` | bool | no | For `cron` only. Defaults to `false`. `true` also runs the process once at startup, on top of its schedule. |
+| `ticker` | string | for `ticker` | Fixed interval between runs, `@every 5sec`, validated at load. See [Ticker semantics](#ticker-semantics). |
+| `run_at_start` | bool | no | For `cron` and `ticker` only. Defaults to `false`. `true` also runs the process once at startup, on top of its schedule. |
 | `enabled` | bool | no | Defaults to `true`. `false` keeps the process from ever starting; it reports as a `failure` to anything that `depends_on` it, and never aborts the run itself. |
 | `on_failure` | string | no | What to do when the process ends unexpectedly (see below). |
 | `hide_label` | bool | no | Overrides the global `hide_labels` for this process. Drops the process name from its output: no `[name] ` prefix in console (lines start at column 0), in json a line that is already json is passed through untouched, anything else becomes a bare `{"message": ...}`. Defaults to `false`. |
-| `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service` or a `cron` — neither is expected to exit, so the dependent would never start. |
+| `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service`, `cron`, or `ticker` — none is expected to exit, so the dependent would never start. |
 
 `on_failure` values depend on the process type:
 
 | Type | Allowed values |
 | --- | --- |
 | `service` | `exit` (default, aborts the run), `restart` (rerun until the run is cancelled), `continue` (tolerate). |
-| `one_shot` / `cron` | `fail` (default, aborts the run), `continue` (tolerate), `retry <count>` (rerun up to count times, then fail). |
+| `one_shot` / `cron` / `ticker` | `fail` (default, aborts the run), `continue` (tolerate), `retry <count>` (rerun up to count times, then fail). |
 
 ## Dependency semantics
 
@@ -163,11 +165,11 @@ immediately and run in parallel. If an upstream exits with an outcome that does
 not satisfy the condition, the dependent is skipped (never started).
 
 Any process type may declare `depends_on`, so a `service` can wait on a
-migration `one_shot`, and so can a `cron`. What an upstream may *be* is
-restricted instead: gating waits for the upstream to exit, and neither a
-`service` nor a `cron` is expected to — a cron keeps running its schedule — so
-depending on either would park the dependent for the life of the container.
-That is rejected at startup.
+migration `one_shot`, and so can a `cron` or a `ticker`. What an upstream may
+*be* is restricted instead: gating waits for the upstream to exit, and a
+`service`, `cron` or `ticker` is not expected to — a scheduled process keeps
+running its schedule — so depending on one would park the dependent for the life
+of the container. That is rejected at startup.
 
 A process with `enabled: false` never starts, whatever its type. Dependents see
 it as a `failure`: those requiring `exit: success` are skipped, those requiring
@@ -242,6 +244,39 @@ startup error, not a process that silently never runs.
 Occurrences of one process never overlap. The next fire time is computed after
 the previous run finishes, so a run that overshoots its own schedule skips the
 slots it covered rather than stacking copies; missed slots are not made up.
+
+## Ticker semantics
+
+A `ticker` is a `cron` that counts an interval instead of matching a wall clock —
+for work that should happen "every 5 seconds", which cron's one-minute
+granularity cannot express. Everything else is identical: it runs for the life of
+the container, honours `run_at_start`, applies `on_failure` per occurrence, and
+cannot be depended on.
+
+```yaml
+processes:
+  poll-queue:
+    path: /bin/poll
+    type: ticker
+    ticker: "@every 5sec"   # 5s after the previous run finishes
+    on_failure: continue    # a failed poll shouldn't take the container down
+  heartbeat:
+    path: /bin/heartbeat
+    type: ticker
+    ticker: "@every 30s"
+    run_at_start: true      # ...and once at startup, so the first beat is immediate
+```
+
+The interval is a number and a unit. Units may be spelled out (`ms`, `sec`,
+`min`, `hour`) or use Go's letters (`ms`, `s`, `m`, `h`), and may be combined:
+`@every 5sec`, `@every 30s`, `@every 2minutes`, `@every 1min30sec`. The `@every`
+prefix is optional — `ticker: "5sec"` is the same schedule. A zero, negative, or
+unparseable interval is a startup error.
+
+Unlike cron, a ticker's period is measured from the end of the previous run, not
+from a fixed grid: an interval of 5s with a run that takes 2s fires every 7s. So
+a ticker never overlaps itself and never falls behind, but it also does not stay
+in phase with the clock — use a `cron` when the run must land *at* a given time.
 
 ## Logging
 
