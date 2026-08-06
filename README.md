@@ -118,9 +118,19 @@ SUPERVISOR_PROCESSES__SEED__DEPENDS_ON__MIGRATE__EXIT=success
 ```
 
 Any scalar leaf works at any depth, so a whole config can be defined in env vars
-alone. `arguments` is a list; from an env var it's split on whitespace
-(`ARGUMENTS="--dry-run --limit 10"`), so use the YAML list form when an argument
-must itself contain a space.
+alone. `arguments` is a list: a single value is split on whitespace
+(`ARGUMENTS="--dry-run --limit 10"`), or number the entries when an argument
+must itself contain a space:
+
+```sh
+SUPERVISOR_PROCESSES__MIGRATE__ARGUMENTS__0=--dry-run
+SUPERVISOR_PROCESSES__MIGRATE__ARGUMENTS__1="--limit 10"
+```
+
+The name-to-YAML conversion is [envelope](https://github.com/BaseCrusher/envelope);
+see its README for the full naming rules (list indexes, escaping a key that
+looks like an index). Names are case-insensitive here — the part after
+`SUPERVISOR_` is lowered to match the YAML keys.
 
 ### Schema
 

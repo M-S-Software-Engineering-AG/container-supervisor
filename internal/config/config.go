@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BaseCrusher/envelope"
 	"gopkg.in/yaml.v3"
 )
 
@@ -130,7 +131,9 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	applyEnv(raw)
+	if err := applyEnv(raw); err != nil {
+		return nil, err
+	}
 
 	merged, err := yaml.Marshal(raw)
 	if err != nil {
@@ -376,28 +379,42 @@ func (s Schedule) Next(t time.Time) time.Time {
 	return time.Time{}
 }
 
-func applyEnv(m map[string]any) {
+// applyEnv overlays SUPERVISOR_-prefixed variables onto the document loaded
+// from the config file. Names are lowered to match the YAML keys; envelope
+// turns the rest into the tree.
+func applyEnv(m map[string]any) error {
+	var environ []string
 	for _, kv := range os.Environ() {
-		k, v, _ := strings.Cut(kv, "=")
-		if !strings.HasPrefix(k, envPrefix) {
+		name, value, _ := strings.Cut(kv, "=")
+		rest, ok := strings.CutPrefix(name, envPrefix)
+		if !ok {
 			continue
 		}
-		path := strings.Split(strings.ToLower(strings.TrimPrefix(k, envPrefix)), "__")
-		setNested(m, path, v)
+		environ = append(environ, envPrefix+strings.ToLower(rest)+"="+value)
 	}
+
+	doc, err := envelope.Parse(environ, envPrefix)
+	if err != nil {
+		return fmt.Errorf("environment: %w", err)
+	}
+	over, ok := doc.(map[string]any)
+	if !ok {
+		return fmt.Errorf("environment: %s variables must name config keys, not list indexes", envPrefix)
+	}
+	merge(m, over)
+	return nil
 }
 
-func setNested(m map[string]any, path []string, val string) {
-	for i, key := range path {
-		if i == len(path)-1 {
-			m[key] = val
-			return
+// merge overlays src onto dst, descending into mappings present in both so an
+// env var overrides one key without dropping its siblings from the file.
+func merge(dst, src map[string]any) {
+	for k, v := range src {
+		if sub, ok := v.(map[string]any); ok {
+			if existing, ok := dst[k].(map[string]any); ok {
+				merge(existing, sub)
+				continue
+			}
 		}
-		next, ok := m[key].(map[string]any)
-		if !ok {
-			next = map[string]any{}
-			m[key] = next
-		}
-		m = next
+		dst[k] = v
 	}
 }

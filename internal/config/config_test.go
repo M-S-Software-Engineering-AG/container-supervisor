@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -435,6 +436,23 @@ func TestEnvDefinesDependsOn(t *testing.T) {
 	}
 	if got := cfg.Processes["db"].DependsOn["migrate"].Exit; got != "success" {
 		t.Errorf("depends_on via env: got %q want success", got)
+	}
+}
+
+func TestEnvDefinesArgumentList(t *testing.T) {
+	t.Setenv("SUPERVISOR_PROCESSES__API__PATH", "/bin/api")
+	t.Setenv("SUPERVISOR_PROCESSES__API__TYPE", "one_shot")
+	t.Setenv("SUPERVISOR_PROCESSES__API__ARGUMENTS__0", "--dry-run")
+	t.Setenv("SUPERVISOR_PROCESSES__API__ARGUMENTS__1", "--limit 10")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string(cfg.Processes["api"].Args)
+	want := []string{"--dry-run", "--limit 10"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("args via env list: got %v want %v", got, want)
 	}
 }
 

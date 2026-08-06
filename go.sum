@@ -1,3 +1,5 @@
+github.com/BaseCrusher/envelope v1.0.0 h1:3LIkwQ1pyFfbVJX1pIWiQTwnh5gCz0ePZnMd8yCTe20=
+github.com/BaseCrusher/envelope v1.0.0/go.mod h1:QWMeU+nNz5nhkaI4qB6SPFXcooT+4uLsxL1PamJLoiI=
 github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHPsaIE=
 github.com/mattn/go-colorable v0.1.14/go.mod h1:6LmQG8QLFO4G5z1gPvYEzlUgJ2wF+stgPZH1UqBm1s8=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
