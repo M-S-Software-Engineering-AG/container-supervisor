@@ -103,6 +103,12 @@ func Run(parent context.Context, cfg *config.Config, log zerolog.Logger) error {
 			st := states[name]
 			defer close(st.done)
 
+			log := log
+			if proc.LogLevel != "" {
+				lvl, _ := zerolog.ParseLevel(proc.LogLevel)
+				log = log.Level(lvl)
+			}
+
 			if !proc.IsEnabled() {
 				st.status = statusFailure
 				log.Info().Str("process_name", name).Msg("process disabled; not starting")

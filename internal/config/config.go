@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BaseCrusher/envelope"
+	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 )
 
@@ -40,6 +41,7 @@ type Process struct {
 	Env        map[string]string     `yaml:"environment"`
 	DependsOn  map[string]Dependency `yaml:"depends_on"`
 	Type       string                `yaml:"type"`
+	LogLevel   string                `yaml:"loglevel"`
 	Enabled    *Bool                 `yaml:"enabled"`
 	Cron       string                `yaml:"cron"`
 	Ticker     string                `yaml:"ticker"`
@@ -209,6 +211,11 @@ func Load(path string) (*Config, error) {
 		}
 		if !proc.IsScheduled() && bool(proc.RunAtStart) {
 			return nil, fmt.Errorf("process %q: run_at_start is only valid for type cron or ticker", name)
+		}
+		if proc.LogLevel != "" {
+			if _, err := zerolog.ParseLevel(proc.LogLevel); err != nil {
+				return nil, fmt.Errorf("process %q: invalid loglevel %q", name, proc.LogLevel)
+			}
 		}
 		cfg.Processes[name] = proc
 	}
