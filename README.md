@@ -156,6 +156,7 @@ Per-process keys (`processes.<name>.*`):
 | `run_at_start` | bool | no | For `cron` and `ticker` only. Defaults to `false`. `true` also runs the process once at startup, on top of its schedule. |
 | `enabled` | bool | no | Defaults to `true`. `false` keeps the process from ever starting; it reports as a `failure` to anything that `depends_on` it, and never aborts the run itself. |
 | `on_failure` | string | no | What to do when the process ends unexpectedly (see below). |
+| `loglevel` | string | no | Overrides the global `loglevel` for this process's logger: `trace`, `debug`, `info`, `warn`, `error`. Validated at load. Defaults to the global level. |
 | `hide_label` | bool | no | Overrides the global `hide_labels` for this process. Drops the process name from its output: no `[name] ` prefix in console (lines start at column 0), in json a line that is already json is passed through untouched, anything else becomes a bare `{"message": ...}`. Defaults to `false`. |
 | `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service`, `cron`, or `ticker` — none is expected to exit, so the dependent would never start. |
 
@@ -290,7 +291,8 @@ in phase with the clock — use a `cron` when the run must land *at* a given tim
 
 ## Logging
 
-Log level is set via `loglevel` / `SUPERVISOR_LOGLEVEL` (default `info`).
+Log level is set via `loglevel` / `SUPERVISOR_LOGLEVEL` (default `info`), and a
+process can override it with its own `loglevel` (see the per-process schema).
 
 Output format is set via `log_output_format` / `SUPERVISOR_LOG_OUTPUT_FORMAT`:
 
