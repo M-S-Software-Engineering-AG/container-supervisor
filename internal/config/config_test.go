@@ -544,6 +544,126 @@ processes:
 	}
 }
 
+func TestForEachExpands(t *testing.T) {
+	p := writeYAML(t, `
+processes:
+  worker:
+    path: /bin/worker
+    type: one_shot
+    arguments: ["--shard", "{{1}}", "--zone", "{{2}}"]
+    environment:
+      ZONE: "{{2}}"
+    for_each:
+      - "3;eu-west"
+      - "4;us-east"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Processes) != 2 {
+		t.Fatalf("expected 2 instances, got %d: %v", len(cfg.Processes), cfg.Processes)
+	}
+	w := cfg.Processes["worker (3)"]
+	if w.Path != "/bin/worker" {
+		t.Errorf("instance path: got %q", w.Path)
+	}
+	if got, want := []string(w.Args), []string{"--shard", "3", "--zone", "eu-west"}; !slices.Equal(got, want) {
+		t.Errorf("instance args: got %v want %v", got, want)
+	}
+	if got := w.Env["ZONE"]; got != "eu-west" {
+		t.Errorf("instance env ZONE: got %q want eu-west", got)
+	}
+	if cfg.Processes["worker (4)"].Env["ZONE"] != "us-east" {
+		t.Errorf("second instance env: got %q", cfg.Processes["worker (4)"].Env["ZONE"])
+	}
+}
+
+func TestForEachRewritesDependsOn(t *testing.T) {
+	p := writeYAML(t, `
+processes:
+  seed:
+    path: /bin/seed
+    type: one_shot
+    for_each:
+      - a
+      - b
+  app:
+    path: /bin/app
+    type: service
+    depends_on:
+      seed:
+        exit: success
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := cfg.Processes["app"].DependsOn
+	if len(deps) != 2 {
+		t.Fatalf("expected app to depend on 2 instances, got %v", deps)
+	}
+	for _, in := range []string{"seed (a)", "seed (b)"} {
+		if deps[in].Exit != "success" {
+			t.Errorf("app depends_on %q: got %q want success", in, deps[in].Exit)
+		}
+	}
+}
+
+func TestForEachViaEnv(t *testing.T) {
+	t.Setenv("SUPERVISOR_PROCESSES__WORKER__PATH", "/bin/worker")
+	t.Setenv("SUPERVISOR_PROCESSES__WORKER__TYPE", "one_shot")
+	t.Setenv("SUPERVISOR_PROCESSES__WORKER__ARGUMENTS__0", "--shard {{1}}")
+	t.Setenv("SUPERVISOR_PROCESSES__WORKER__ARGUMENTS__1", "--zone {{2}}")
+	t.Setenv("SUPERVISOR_PROCESSES__WORKER__FOR_EACH__0", "3;eu-west")
+	t.Setenv("SUPERVISOR_PROCESSES__WORKER__FOR_EACH__1", "4;us-east")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Processes) != 2 {
+		t.Fatalf("expected 2 instances, got %d: %v", len(cfg.Processes), cfg.Processes)
+	}
+	want := map[string][]string{
+		"worker (3)": {"--shard 3", "--zone eu-west"},
+		"worker (4)": {"--shard 4", "--zone us-east"},
+	}
+	for name, wantArgs := range want {
+		if got := []string(cfg.Processes[name].Args); !slices.Equal(got, wantArgs) {
+			t.Errorf("%s args: got %v want %v", name, got, wantArgs)
+		}
+	}
+}
+
+func TestForEachScalarViaEnvRejected(t *testing.T) {
+	t.Setenv("SUPERVISOR_PROCESSES__WORKER__PATH", "/bin/worker")
+	t.Setenv("SUPERVISOR_PROCESSES__WORKER__TYPE", "one_shot")
+	t.Setenv("SUPERVISOR_PROCESSES__WORKER__FOR_EACH", "3;eu-west")
+
+	if _, err := Load(""); err == nil {
+		t.Fatal("expected error for scalar for_each via env, got nil")
+	}
+}
+
+func TestForEachErrors(t *testing.T) {
+	cases := map[string]string{
+		"placeholder out of range": "processes:\n  w:\n    path: /bin/w\n    type: one_shot\n" +
+			"    arguments: [\"{{3}}\"]\n    for_each:\n      - \"a;b\"\n",
+		"empty for_each":    "processes:\n  w:\n    path: /bin/w\n    type: one_shot\n    for_each: []\n",
+		"empty first field": "processes:\n  w:\n    path: /bin/w\n    type: one_shot\n    for_each:\n      - \";x\"\n",
+		"duplicate instance": "processes:\n  w:\n    path: /bin/w\n    type: one_shot\n" +
+			"    for_each:\n      - \"a;1\"\n      - \"a;2\"\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeYAML(t, body)); err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
+	}
+}
+
 func TestServiceDependsOnOneShot(t *testing.T) {
 	p := writeYAML(t, `
 processes:

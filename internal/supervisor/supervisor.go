@@ -1,7 +1,3 @@
-// Package supervisor runs the configured processes as a dependency graph:
-// a process with no depends_on starts immediately, one with dependencies
-// starts once each upstream has exited with the required outcome. Run
-// validates the graph (dependencies exist, no cycles) before starting.
 package supervisor
 
 import (
