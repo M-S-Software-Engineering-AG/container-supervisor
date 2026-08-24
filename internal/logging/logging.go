@@ -1,8 +1,3 @@
-// Package logging separates two kinds of output. The supervisor's own
-// structured events come from Supervisor(), tagged "[supervisor]" (console)
-// or process=supervisor (json). A child process's raw stdout/stderr is piped
-// through a Factory.ProcessWriter, which tags each line with the process name:
-// a bracketed, width-aligned prefix in console, or a "process" envelope in json.
 package logging
 
 import (

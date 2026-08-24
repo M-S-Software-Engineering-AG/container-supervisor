@@ -158,6 +158,7 @@ Per-process keys (`processes.<name>.*`):
 | `on_failure` | string | no | What to do when the process ends unexpectedly (see below). |
 | `loglevel` | string | no | Overrides the global `loglevel` for this process's logger: `trace`, `debug`, `info`, `warn`, `error`. Validated at load. Defaults to the global level. |
 | `hide_label` | bool | no | Overrides the global `hide_labels` for this process. Drops the process name from its output: no `[name] ` prefix in console (lines start at column 0), in json a line that is already json is passed through untouched, anything else becomes a bare `{"message": ...}`. Defaults to `false`. |
+| `for_each` | list | no | Only valid for `one_shot`. Fan the process out into one instance per entry. Each entry is a row of `;`-separated fields; `{{N}}` (1-based) in `path`, `arguments`, and `environment` values is replaced with the Nth field. See [for_each](#for_each). |
 | `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service`, `cron`, or `ticker` — none is expected to exit, so the dependent would never start. |
 
 `on_failure` values depend on the process type:
@@ -210,6 +211,68 @@ processes:
     path: /bin/metrics
     type: service
     on_failure: continue    # a crash here doesn't take the container down
+```
+
+## for_each
+
+`for_each` fans one process definition out into several instances that differ
+only in a few values — the same binary run per shard, per region, per tenant —
+without copy-pasting a block per case. It is only valid on `one_shot`
+processes.
+
+Each entry in the list is a row of `;`-separated fields. Every row produces one
+instance; `{{N}}` (1-based) in the process's `path`, `arguments`, or
+`environment` values is replaced with the row's Nth field:
+
+```yaml
+processes:
+  worker:
+    path: /bin/worker
+    type: one_shot
+    arguments: ["--shard", "{{1}}", "--zone", "{{2}}"]
+    environment:
+      ZONE: "{{2}}"
+    for_each:
+      - "3;eu-west"
+      - "4;us-east"
+```
+
+This starts two processes: `worker (3)` running `/bin/worker --shard 3 --zone
+eu-west` and `worker (4)` running `--shard 4 --zone us-east`. Each instance is
+named `<process> (<first field>)`, and that name is what appears in log labels.
+A `{{N}}` that points past the fields in a row, an empty first field, or two
+rows that yield the same instance name are all startup errors.
+
+Other processes `depends_on` the group by its original name — the dependency is
+expanded to every instance, so the dependent waits for **all** of them and its
+`exit` condition must hold for each:
+
+```yaml
+processes:
+  migrate:
+    path: /bin/migrate
+    type: one_shot
+    arguments: ["--tenant", "{{1}}"]
+    for_each: ["acme", "globex"]
+  api:
+    path: /bin/api
+    type: service
+    depends_on:
+      migrate:                # waits for migrate (acme) AND migrate (globex)
+        exit: success         # both must exit 0, or api is skipped
+```
+
+In environment variables, `for_each` is a list like `arguments`, so number the
+rows; the `;`-separated fields stay in each value. A single scalar is rejected —
+it must be indexed:
+
+```sh
+SUPERVISOR_PROCESSES__WORKER__PATH=/bin/worker
+SUPERVISOR_PROCESSES__WORKER__TYPE=one_shot
+SUPERVISOR_PROCESSES__WORKER__ARGUMENTS__0="--shard {{1}}"
+SUPERVISOR_PROCESSES__WORKER__ARGUMENTS__1="--zone {{2}}"
+SUPERVISOR_PROCESSES__WORKER__FOR_EACH__0="3;eu-west"
+SUPERVISOR_PROCESSES__WORKER__FOR_EACH__1="4;us-east"
 ```
 
 ## Cron semantics

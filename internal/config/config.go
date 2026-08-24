@@ -1,5 +1,3 @@
-// Package config loads the supervisor configuration from a YAML file and/or
-// SUPERVISOR_-prefixed environment variables.
 package config
 
 import (
@@ -48,6 +46,7 @@ type Process struct {
 	RunAtStart Bool                  `yaml:"run_at_start"`
 	HideLabel  *Bool                 `yaml:"hide_label"`
 	OnFailure  string                `yaml:"on_failure"`
+	ForEach    []string              `yaml:"for_each"`
 }
 
 type Args []string
@@ -212,6 +211,9 @@ func Load(path string) (*Config, error) {
 		if !proc.IsScheduled() && bool(proc.RunAtStart) {
 			return nil, fmt.Errorf("process %q: run_at_start is only valid for type cron or ticker", name)
 		}
+		if proc.ForEach != nil && proc.Type != TypeOneShot {
+			return nil, fmt.Errorf("process %q: for_each is only valid for type one_shot", name)
+		}
 		if proc.LogLevel != "" {
 			if _, err := zerolog.ParseLevel(proc.LogLevel); err != nil {
 				return nil, fmt.Errorf("process %q: invalid loglevel %q", name, proc.LogLevel)
@@ -219,7 +221,97 @@ func Load(path string) (*Config, error) {
 		}
 		cfg.Processes[name] = proc
 	}
+	if err := expand(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+var placeholderRe = regexp.MustCompile(`\{\{(\d+)\}\}`)
+
+func substitute(name, s string, fields []string) (string, error) {
+	var subErr error
+	out := placeholderRe.ReplaceAllStringFunc(s, func(m string) string {
+		n, _ := strconv.Atoi(m[2 : len(m)-2])
+		if n < 1 || n > len(fields) {
+			subErr = fmt.Errorf("process %q: %s references field %d, but the row has %d", name, m, n, len(fields))
+			return m
+		}
+		return fields[n-1]
+	})
+	return out, subErr
+}
+
+func expand(cfg *Config) error {
+	instances := map[string][]string{}
+	result := make(map[string]Process, len(cfg.Processes))
+
+	for name, proc := range cfg.Processes {
+		if len(proc.ForEach) == 0 {
+			if proc.ForEach != nil {
+				return fmt.Errorf("process %q: for_each is set but empty", name)
+			}
+			result[name] = proc
+			continue
+		}
+		for _, row := range proc.ForEach {
+			fields := strings.Split(row, ";")
+			for i := range fields {
+				fields[i] = strings.TrimSpace(fields[i])
+			}
+			if fields[0] == "" {
+				return fmt.Errorf("process %q: for_each row %q has an empty first field", name, row)
+			}
+			inst := name + " (" + fields[0] + ")"
+			if _, taken := result[inst]; taken {
+				return fmt.Errorf("process %q: for_each produces duplicate instance %q", name, inst)
+			}
+
+			ip := proc
+			ip.ForEach = nil
+			var err error
+			if ip.Path, err = substitute(name, proc.Path, fields); err != nil {
+				return err
+			}
+			ip.Args = make(Args, len(proc.Args))
+			for i, a := range proc.Args {
+				if ip.Args[i], err = substitute(name, a, fields); err != nil {
+					return err
+				}
+			}
+			if proc.Env != nil {
+				ip.Env = make(map[string]string, len(proc.Env))
+				for k, v := range proc.Env {
+					if ip.Env[k], err = substitute(name, v, fields); err != nil {
+						return err
+					}
+				}
+			}
+			result[inst] = ip
+			instances[name] = append(instances[name], inst)
+		}
+	}
+
+	for name, proc := range result {
+		if len(proc.DependsOn) == 0 {
+			continue
+		}
+		deps := make(map[string]Dependency, len(proc.DependsOn))
+		for dep, cond := range proc.DependsOn {
+			if insts, ok := instances[dep]; ok {
+				for _, in := range insts {
+					deps[in] = cond
+				}
+			} else {
+				deps[dep] = cond
+			}
+		}
+		proc.DependsOn = deps
+		result[name] = proc
+	}
+
+	cfg.Processes = result
+	return nil
 }
 
 const everyPrefix = "@every"
@@ -386,9 +478,6 @@ func (s Schedule) Next(t time.Time) time.Time {
 	return time.Time{}
 }
 
-// applyEnv overlays SUPERVISOR_-prefixed variables onto the document loaded
-// from the config file. Names are lowered to match the YAML keys; envelope
-// turns the rest into the tree.
 func applyEnv(m map[string]any) error {
 	var environ []string
 	for _, kv := range os.Environ() {
@@ -412,8 +501,6 @@ func applyEnv(m map[string]any) error {
 	return nil
 }
 
-// merge overlays src onto dst, descending into mappings present in both so an
-// env var overrides one key without dropping its siblings from the file.
 func merge(dst, src map[string]any) {
 	for k, v := range src {
 		if sub, ok := v.(map[string]any); ok {
