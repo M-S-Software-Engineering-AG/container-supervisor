@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -117,6 +118,7 @@ type Config struct {
 	LogLevel        string             `yaml:"loglevel"`
 	LogOutputFormat string             `yaml:"log_output_format"`
 	HideLabels      Bool               `yaml:"hide_labels"`
+	EnvDir          string             `yaml:"env_dir"`
 	Processes       map[string]Process `yaml:"processes"`
 }
 
@@ -152,6 +154,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.LogOutputFormat == "" {
 		cfg.LogOutputFormat = "console"
+	}
+	if cfg.EnvDir == "" {
+		cfg.EnvDir = filepath.Join(filepath.Dir(path), "supervisor_environment")
 	}
 	for name, proc := range cfg.Processes {
 		if proc.HideLabel == nil {

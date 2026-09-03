@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -131,7 +133,7 @@ func Run(parent context.Context, cfg *config.Config, log zerolog.Logger) error {
 
 			if proc.Type == config.TypeService && proc.OnFailure == "restart" {
 				for ctx.Err() == nil {
-					st.status = runProcess(ctx, name, proc, factory, log)
+					st.status = runProcess(ctx, name, proc, cfg.EnvDir, factory, log)
 					if ctx.Err() == nil {
 						log.Warn().Str("process_name", name).Msg("service exited; restarting")
 					}
@@ -140,7 +142,7 @@ func Run(parent context.Context, cfg *config.Config, log zerolog.Logger) error {
 			}
 
 			if proc.IsScheduled() {
-				st.status = runScheduled(ctx, name, proc, factory, log)
+				st.status = runScheduled(ctx, name, proc, cfg.EnvDir, factory, log)
 				if st.status == statusFailure && ctx.Err() == nil {
 					aborted.Store(true)
 					log.Error().Str("process_name", name).Msg("critical process failed; aborting run")
@@ -149,7 +151,7 @@ func Run(parent context.Context, cfg *config.Config, log zerolog.Logger) error {
 				return
 			}
 
-			st.status = runWithRetries(ctx, name, proc, factory, log)
+			st.status = runWithRetries(ctx, name, proc, cfg.EnvDir, factory, log)
 
 			if ctx.Err() != nil {
 				return
@@ -188,7 +190,7 @@ func conditionMet(want, status string) bool {
 
 var cronNext = func(s config.Schedule, after time.Time) time.Time { return s.Next(after) }
 
-func runScheduled(ctx context.Context, name string, proc config.Process, factory *logging.Factory, log zerolog.Logger) string {
+func runScheduled(ctx context.Context, name string, proc config.Process, envDir string, factory *logging.Factory, log zerolog.Logger) string {
 	sched, err := proc.ParseSchedule()
 	if err != nil {
 		log.Error().Err(err).Str("process_name", name).Str("type", proc.Type).Msg("invalid schedule")
@@ -217,7 +219,7 @@ func runScheduled(ctx context.Context, name string, proc config.Process, factory
 		}
 		runNow = false
 
-		status := runWithRetries(ctx, name, proc, factory, log)
+		status := runWithRetries(ctx, name, proc, envDir, factory, log)
 
 		if now := time.Now(); now.After(from) {
 			from = now
@@ -233,22 +235,67 @@ func runScheduled(ctx context.Context, name string, proc config.Process, factory
 	return statusSkipped
 }
 
-func runWithRetries(ctx context.Context, name string, proc config.Process, factory *logging.Factory, log zerolog.Logger) string {
-	status := runProcess(ctx, name, proc, factory, log)
+func runWithRetries(ctx context.Context, name string, proc config.Process, envDir string, factory *logging.Factory, log zerolog.Logger) string {
+	status := runProcess(ctx, name, proc, envDir, factory, log)
 	for retries := proc.RetryCount(); status == statusFailure && retries > 0 && ctx.Err() == nil; retries-- {
 		log.Warn().Str("process_name", name).Int("retries_left", retries).Msg("process failed; retrying")
-		status = runProcess(ctx, name, proc, factory, log)
+		status = runProcess(ctx, name, proc, envDir, factory, log)
 	}
 	return status
 }
 
-func runProcess(ctx context.Context, name string, proc config.Process, factory *logging.Factory, log zerolog.Logger) string {
+func readEnvDir(dir string, log zerolog.Logger) map[string]string {
+	if dir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Error().Err(err).Str("env_dir", dir).Msg("reading env dir")
+		}
+		return nil
+	}
+	env := map[string]string{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			log.Error().Err(err).Str("file", e.Name()).Msg("reading env file")
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if k, v, ok := strings.Cut(line, "="); ok {
+				env[strings.TrimSpace(k)] = strings.TrimSpace(v)
+			}
+		}
+	}
+	return env
+}
+
+func runProcess(ctx context.Context, name string, proc config.Process, envDir string, factory *logging.Factory, log zerolog.Logger) string {
 	log.Info().Str("process_name", name).Str("path", proc.Path).Strs("args", proc.Args).Msg("starting process")
 
 	cmd := exec.CommandContext(ctx, proc.Path, proc.Args...)
-	if len(proc.Env) > 0 {
-		cmd.Env = os.Environ()
+	if injected := readEnvDir(envDir, log); len(injected) > 0 || len(proc.Env) > 0 {
+		env := map[string]string{}
+		for _, kv := range os.Environ() {
+			k, v, _ := strings.Cut(kv, "=")
+			env[k] = v
+		}
+		for k, v := range injected {
+			env[k] = v
+		}
 		for k, v := range proc.Env {
+			env[k] = v
+		}
+		cmd.Env = make([]string, 0, len(env))
+		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}

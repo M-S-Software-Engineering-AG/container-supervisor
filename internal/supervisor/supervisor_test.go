@@ -131,6 +131,30 @@ func TestRunPassesEnv(t *testing.T) {
 	}
 }
 
+func TestRunPassesEnvBetweenProcesses(t *testing.T) {
+	dir := t.TempDir()
+	envDir := filepath.Join(dir, "supervisor_environment")
+	if err := os.Mkdir(envDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out")
+
+	c := cfg(map[string]config.Process{
+		"producer": {Path: scriptBody(t, dir, "producer", `echo "TOKEN=abc123" > `+filepath.Join(envDir, "producer.env")), Type: config.TypeOneShot},
+		"consumer": {Path: scriptBody(t, dir, "consumer", `echo "$TOKEN" > `+out), Type: config.TypeOneShot, DependsOn: dep("producer", "success")},
+	})
+	c.EnvDir = envDir
+
+	if err := Run(context.Background(), c, zerolog.Nop()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := os.ReadFile(out)
+	if strings.TrimSpace(string(got)) != "abc123" {
+		t.Fatalf("TOKEN = %q, want %q", got, "abc123")
+	}
+}
+
 func TestRunSkipsWhenConditionUnmet(t *testing.T) {
 	dir := t.TempDir()
 	order := filepath.Join(dir, "order")
