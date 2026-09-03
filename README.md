@@ -141,6 +141,7 @@ Top-level keys:
 | `loglevel` | string | Log verbosity: `trace`, `debug`, `info` (default), `warn`, `error`. |
 | `log_output_format` | string | `console` (default) or `json`. See [Logging](#logging). |
 | `hide_labels` | bool | Default for every process's `hide_label` (below). Defaults to `false`. |
+| `env_dir` | string | Folder scanned for env vars to pass between processes. See [Passing env vars between processes](#passing-env-vars-between-processes). Defaults to `supervisor_environment` next to the config file. |
 | `processes` | map | Process name → process definition (below). |
 
 Per-process keys (`processes.<name>.*`):
@@ -167,6 +168,33 @@ Per-process keys (`processes.<name>.*`):
 | --- | --- |
 | `service` | `exit` (default, aborts the run), `restart` (rerun until the run is cancelled), `continue` (tolerate). |
 | `one_shot` / `cron` / `ticker` | `fail` (default, aborts the run), `continue` (tolerate), `retry <count>` (rerun up to count times, then fail). |
+
+## Passing env vars between processes
+
+A process can hand env vars to a later one by writing a file into `env_dir` (defaults to `supervisor_environment` next to the config file). Before starting any process, the supervisor reads every file in that folder and injects the vars into the child.
+
+Each file is dotenv-style, one `KEY=VALUE` per line; blank lines and `#` comments are ignored:
+
+```sh
+# producer.sh
+echo "API_TOKEN=$(fetch-token)" > /container-supervisor/supervisor_environment/producer.env
+```
+
+Order the producer before the consumer with `depends_on` — that barrier is what guarantees the file exists on disk before the consumer starts:
+
+```yaml
+processes:
+  producer:
+    type: one_shot
+    path: /producer.sh
+  consumer:
+    type: one_shot
+    path: /consumer.sh   # sees $API_TOKEN
+    depends_on:
+      producer: { exit: success }
+```
+
+Precedence, lowest to highest: the supervisor's own environment, then `env_dir` files, then the process's `environment:` block (config always wins). Files accumulate for the life of the container; processes are never restarted.
 
 ## Dependency semantics
 
