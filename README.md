@@ -148,8 +148,8 @@ Per-process keys (`processes.<name>.*`):
 
 | Key | Type | Required | Used for |
 | --- | --- | --- | --- |
-| `path` | string | yes | Path to the executable to run. |
-| `type` | string | yes | `service` (long-running; exiting at all aborts the run), `one_shot` (expected to finish; exit 0 is clean), `cron` (runs on a wall-clock schedule), or `ticker` (runs on a fixed interval). |
+| `path` | string | yes | Path to the executable to run. Ignored for `prepare_secrets`, which runs no external command. |
+| `type` | string | yes | `service` (long-running; exiting at all aborts the run), `one_shot` (expected to finish; exit 0 is clean), `cron` (runs on a wall-clock schedule), `ticker` (runs on a fixed interval), or `prepare_secrets` (built-in; resolves `*_FILE` variables into `env_dir`, see [Preparing secrets](#preparing-secrets)). |
 | `arguments` | list | no | Args passed to the executable verbatim. |
 | `environment` | map | no | Env vars added on top of the supervisor's own environment, overriding inherited keys of the same name. |
 | `cron` | string | for `cron` | Standard 5-field cron expression (`minute hour day-of-month month day-of-week`), validated at load. See [Cron semantics](#cron-semantics). |
@@ -167,17 +167,17 @@ Per-process keys (`processes.<name>.*`):
 | Type | Allowed values |
 | --- | --- |
 | `service` | `exit` (default, aborts the run), `restart` (rerun until the run is cancelled), `continue` (tolerate). |
-| `one_shot` / `cron` / `ticker` | `fail` (default, aborts the run), `continue` (tolerate), `retry <count>` (rerun up to count times, then fail). |
+| `one_shot` / `cron` / `ticker` / `prepare_secrets` | `fail` (default, aborts the run), `continue` (tolerate), `retry <count>` (rerun up to count times, then fail). |
 
 ## Passing env vars between processes
 
 A process can hand env vars to a later one by writing a file into `env_dir` (defaults to `supervisor_environment` next to the config file). Before starting any process, the supervisor reads every file in that folder and injects the vars into the child.
 
-Each file is dotenv-style, one `KEY=VALUE` per line; blank lines and `#` comments are ignored:
+**One file per variable: the filename is the key, the file's contents are the value** (a trailing newline is trimmed). This keeps multiline values — PEM keys, certs — intact, which a line-based format cannot:
 
 ```sh
 # producer.sh
-echo "API_TOKEN=$(fetch-token)" > /container-supervisor/supervisor_environment/producer.env
+printf %s "$(fetch-token)" > /container-supervisor/supervisor_environment/API_TOKEN
 ```
 
 Order the producer before the consumer with `depends_on` — that barrier is what guarantees the file exists on disk before the consumer starts:
@@ -195,6 +195,30 @@ processes:
 ```
 
 Precedence, lowest to highest: the supervisor's own environment, then `env_dir` files, then the process's `environment:` block (config always wins). Files accumulate for the life of the container; processes are never restarted.
+
+### Preparing secrets
+
+A `prepare_secrets` process is a built-in producer for the Docker/Compose `*_FILE`
+convention: for every `NAME_FILE` variable it sees pointing at a path, it reads
+that file and writes `env_dir/NAME`, so later processes get `$NAME` directly. It
+runs no external command (no `path` needed) and its value is the raw file
+contents, so multiline secrets pass through unchanged.
+
+```yaml
+processes:
+  secrets:
+    type: prepare_secrets
+    # sees DB_PASSWORD_FILE and TLS_KEY_FILE from the container environment
+  app:
+    type: service
+    path: /app
+    depends_on:
+      secrets: { exit: success }   # now sees $DB_PASSWORD and $TLS_KEY
+```
+
+The `*_FILE` variables can come from the container's own environment (how Docker
+secrets are wired) or from the process's `environment:` block. As with any
+producer, gate consumers behind it with `depends_on`.
 
 ## Dependency semantics
 

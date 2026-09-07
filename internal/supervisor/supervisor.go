@@ -244,6 +244,9 @@ func runWithRetries(ctx context.Context, name string, proc config.Process, envDi
 	return status
 }
 
+// readEnvDir reads env_dir where each file is one variable: the filename is the
+// key, the file's contents (trailing newline trimmed) are the value. This keeps
+// multiline values (PEM keys, certs) intact, which a line-based format cannot.
 func readEnvDir(dir string, log zerolog.Logger) map[string]string {
 	if dir == "" {
 		return nil
@@ -265,39 +268,79 @@ func readEnvDir(dir string, log zerolog.Logger) map[string]string {
 			log.Error().Err(err).Str("file", e.Name()).Msg("reading env file")
 			continue
 		}
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			if k, v, ok := strings.Cut(line, "="); ok {
-				env[strings.TrimSpace(k)] = strings.TrimSpace(v)
-			}
-		}
+		env[e.Name()] = strings.TrimRight(string(data), "\n")
 	}
 	return env
 }
 
+// buildEnv is the child's full environment: the supervisor's own, then env_dir
+// files, then the process's environment: block (config always wins).
+func buildEnv(proc config.Process, envDir string, log zerolog.Logger) map[string]string {
+	env := map[string]string{}
+	for _, kv := range os.Environ() {
+		k, v, _ := strings.Cut(kv, "=")
+		env[k] = v
+	}
+	for k, v := range readEnvDir(envDir, log) {
+		env[k] = v
+	}
+	for k, v := range proc.Env {
+		env[k] = v
+	}
+	return env
+}
+
+// prepareSecrets resolves Docker-style *_FILE variables: for each NAME_FILE
+// pointing at a path, it reads the file and writes env_dir/NAME so later
+// processes see $NAME. Writes are atomic (temp + rename) to avoid torn reads.
+func prepareSecrets(name string, proc config.Process, envDir string, log zerolog.Logger) string {
+	if envDir == "" {
+		log.Error().Str("process_name", name).Msg("prepare_secrets needs env_dir set")
+		return statusFailure
+	}
+	if err := os.MkdirAll(envDir, 0o700); err != nil {
+		log.Error().Err(err).Str("process_name", name).Str("env_dir", envDir).Msg("creating env dir")
+		return statusFailure
+	}
+	written := 0
+	for k, path := range buildEnv(proc, envDir, log) {
+		key, ok := strings.CutSuffix(k, "_FILE")
+		if !ok || key == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			log.Error().Err(err).Str("process_name", name).Str("var", k).Str("path", path).Msg("reading secret file")
+			return statusFailure
+		}
+		tmp := filepath.Join(envDir, "."+key+".tmp")
+		if err := os.WriteFile(tmp, data, 0o600); err != nil {
+			log.Error().Err(err).Str("process_name", name).Str("var", key).Msg("writing secret")
+			return statusFailure
+		}
+		if err := os.Rename(tmp, filepath.Join(envDir, key)); err != nil {
+			log.Error().Err(err).Str("process_name", name).Str("var", key).Msg("writing secret")
+			return statusFailure
+		}
+		log.Info().Str("process_name", name).Str("var", key).Msg("secret prepared")
+		written++
+	}
+	log.Info().Str("process_name", name).Int("secrets", written).Msg("prepare_secrets done")
+	return statusSuccess
+}
+
 func runProcess(ctx context.Context, name string, proc config.Process, envDir string, factory *logging.Factory, log zerolog.Logger) string {
+	if proc.Type == config.TypePrepareSecrets {
+		return prepareSecrets(name, proc, envDir, log)
+	}
+
 	log.Info().Str("process_name", name).Str("path", proc.Path).Strs("args", proc.Args).Msg("starting process")
 
 	cmd := exec.CommandContext(ctx, proc.Path, proc.Args...)
-	if injected := readEnvDir(envDir, log); len(injected) > 0 || len(proc.Env) > 0 {
-		env := map[string]string{}
-		for _, kv := range os.Environ() {
-			k, v, _ := strings.Cut(kv, "=")
-			env[k] = v
-		}
-		for k, v := range injected {
-			env[k] = v
-		}
-		for k, v := range proc.Env {
-			env[k] = v
-		}
-		cmd.Env = make([]string, 0, len(env))
-		for k, v := range env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+	env := buildEnv(proc, envDir, log)
+	cmd.Env = make([]string, 0, len(env))
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	stdout := factory.ProcessWriter(name, proc.HidesLabel())
 	stderr := factory.ProcessWriter(name, proc.HidesLabel())
