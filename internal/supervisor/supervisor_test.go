@@ -140,7 +140,7 @@ func TestRunPassesEnvBetweenProcesses(t *testing.T) {
 	out := filepath.Join(dir, "out")
 
 	c := cfg(map[string]config.Process{
-		"producer": {Path: scriptBody(t, dir, "producer", `echo "TOKEN=abc123" > `+filepath.Join(envDir, "producer.env")), Type: config.TypeOneShot},
+		"producer": {Path: scriptBody(t, dir, "producer", `printf abc123 > `+filepath.Join(envDir, "TOKEN")), Type: config.TypeOneShot},
 		"consumer": {Path: scriptBody(t, dir, "consumer", `echo "$TOKEN" > `+out), Type: config.TypeOneShot, DependsOn: dep("producer", "success")},
 	})
 	c.EnvDir = envDir
@@ -152,6 +152,43 @@ func TestRunPassesEnvBetweenProcesses(t *testing.T) {
 	got, _ := os.ReadFile(out)
 	if strings.TrimSpace(string(got)) != "abc123" {
 		t.Fatalf("TOKEN = %q, want %q", got, "abc123")
+	}
+}
+
+func TestPrepareSecrets(t *testing.T) {
+	dir := t.TempDir()
+	envDir := filepath.Join(dir, "supervisor_environment")
+
+	// A multiline secret to prove the format survives PEM-style content.
+	secret := "-----BEGIN KEY-----\nline1\nline2\n-----END KEY-----"
+	secretFile := filepath.Join(dir, "tls.key")
+	if err := os.WriteFile(secretFile, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	proc := config.Process{Type: config.TypePrepareSecrets, Env: map[string]string{"TLS_KEY_FILE": secretFile}}
+	if status := prepareSecrets("secrets", proc, envDir, zerolog.Nop()); status != statusSuccess {
+		t.Fatalf("status = %q, want %q", status, statusSuccess)
+	}
+
+	got, err := os.ReadFile(filepath.Join(envDir, "TLS_KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != secret+"\n" {
+		t.Fatalf("secret = %q, want %q", got, secret+"\n")
+	}
+	// readEnvDir trims the trailing newline so consumers get the exact value.
+	if v := readEnvDir(envDir, zerolog.Nop())["TLS_KEY"]; v != secret {
+		t.Fatalf("readEnvDir TLS_KEY = %q, want %q", v, secret)
+	}
+}
+
+func TestPrepareSecretsMissingFileFails(t *testing.T) {
+	envDir := t.TempDir()
+	proc := config.Process{Type: config.TypePrepareSecrets, Env: map[string]string{"GONE_FILE": "/no/such/path"}}
+	if status := prepareSecrets("secrets", proc, envDir, zerolog.Nop()); status != statusFailure {
+		t.Fatalf("status = %q, want %q", status, statusFailure)
 	}
 }
 

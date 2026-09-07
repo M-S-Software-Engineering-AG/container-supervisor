@@ -133,6 +133,17 @@ func TestCronType(t *testing.T) {
 	}
 }
 
+func TestPrepareSecretsType(t *testing.T) {
+	p := writeYAML(t, "processes:\n  secrets:\n    type: prepare_secrets\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Processes["secrets"].Type; got != TypePrepareSecrets {
+		t.Errorf("secrets.type: got %q want %q", got, TypePrepareSecrets)
+	}
+}
+
 func TestCronMissingSchedule(t *testing.T) {
 	p := writeYAML(t, "processes:\n  backup:\n    path: /bin/backup\n    type: cron\n")
 	if _, err := Load(p); err == nil {

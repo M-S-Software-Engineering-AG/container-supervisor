@@ -26,13 +26,14 @@ func cleanYAMLError(err error) string {
 const envPrefix = "SUPERVISOR_"
 
 const (
-	TypeService = "service"
-	TypeOneShot = "one_shot"
-	TypeCron    = "cron"
-	TypeTicker  = "ticker"
+	TypeService        = "service"
+	TypeOneShot        = "one_shot"
+	TypeCron           = "cron"
+	TypeTicker         = "ticker"
+	TypePrepareSecrets = "prepare_secrets"
 )
 
-const validTypes = "service, one_shot, cron, or ticker"
+const validTypes = "service, one_shot, cron, ticker, or prepare_secrets"
 
 type Process struct {
 	Path       string                `yaml:"path"`
@@ -184,7 +185,7 @@ func Load(path string) (*Config, error) {
 			default:
 				return nil, fmt.Errorf("process %q: invalid on_failure %q for service (want exit, restart, or continue)", name, proc.OnFailure)
 			}
-		case TypeOneShot, TypeCron, TypeTicker:
+		case TypeOneShot, TypeCron, TypeTicker, TypePrepareSecrets:
 			switch {
 			case proc.OnFailure == "", proc.OnFailure == "fail", proc.OnFailure == "continue":
 			case strings.HasPrefix(proc.OnFailure, "retry "):
