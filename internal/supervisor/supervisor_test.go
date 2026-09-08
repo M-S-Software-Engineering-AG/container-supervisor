@@ -166,7 +166,7 @@ func TestPrepareSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	proc := config.Process{Type: config.TypePrepareSecrets, Env: map[string]string{"TLS_KEY_FILE": secretFile}}
+	proc := config.Process{Type: config.TypePrepareSecrets, Secrets: []string{"TLS_KEY_FILE"}, Env: map[string]string{"TLS_KEY_FILE": secretFile}}
 	if status := prepareSecrets("secrets", proc, envDir, zerolog.Nop()); status != statusSuccess {
 		t.Fatalf("status = %q, want %q", status, statusSuccess)
 	}
@@ -186,7 +186,15 @@ func TestPrepareSecrets(t *testing.T) {
 
 func TestPrepareSecretsMissingFileFails(t *testing.T) {
 	envDir := t.TempDir()
-	proc := config.Process{Type: config.TypePrepareSecrets, Env: map[string]string{"GONE_FILE": "/no/such/path"}}
+	proc := config.Process{Type: config.TypePrepareSecrets, Secrets: []string{"GONE_FILE"}, Env: map[string]string{"GONE_FILE": "/no/such/path"}}
+	if status := prepareSecrets("secrets", proc, envDir, zerolog.Nop()); status != statusFailure {
+		t.Fatalf("status = %q, want %q", status, statusFailure)
+	}
+}
+
+func TestPrepareSecretsUnsetVarFails(t *testing.T) {
+	envDir := t.TempDir()
+	proc := config.Process{Type: config.TypePrepareSecrets, Secrets: []string{"MISSING_FILE"}}
 	if status := prepareSecrets("secrets", proc, envDir, zerolog.Nop()); status != statusFailure {
 		t.Fatalf("status = %q, want %q", status, statusFailure)
 	}

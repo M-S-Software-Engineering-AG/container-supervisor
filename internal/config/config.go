@@ -49,6 +49,7 @@ type Process struct {
 	HideLabel  *Bool                 `yaml:"hide_label"`
 	OnFailure  string                `yaml:"on_failure"`
 	ForEach    []string              `yaml:"for_each"`
+	Secrets    []string              `yaml:"secrets"`
 }
 
 type Args []string
@@ -219,6 +220,13 @@ func Load(path string) (*Config, error) {
 		}
 		if proc.ForEach != nil && proc.Type != TypeOneShot {
 			return nil, fmt.Errorf("process %q: for_each is only valid for type one_shot", name)
+		}
+		if proc.Type == TypePrepareSecrets {
+			if len(proc.Secrets) == 0 {
+				return nil, fmt.Errorf("process %q: prepare_secrets requires a non-empty secrets list", name)
+			}
+		} else if proc.Secrets != nil {
+			return nil, fmt.Errorf("process %q: secrets is only valid for type prepare_secrets", name)
 		}
 		if proc.LogLevel != "" {
 			if _, err := zerolog.ParseLevel(proc.LogLevel); err != nil {

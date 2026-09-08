@@ -290,9 +290,10 @@ func buildEnv(proc config.Process, envDir string, log zerolog.Logger) map[string
 	return env
 }
 
-// prepareSecrets resolves Docker-style *_FILE variables: for each NAME_FILE
-// pointing at a path, it reads the file and writes env_dir/NAME so later
-// processes see $NAME. Writes are atomic (temp + rename) to avoid torn reads.
+// prepareSecrets resolves Docker-style *_FILE variables named in proc.Secrets:
+// for each listed NAME_FILE holding a path, it reads the file and writes
+// env_dir/NAME so later processes see $NAME. Writes are atomic (temp + rename)
+// to avoid torn reads.
 func prepareSecrets(name string, proc config.Process, envDir string, log zerolog.Logger) string {
 	if envDir == "" {
 		log.Error().Str("process_name", name).Msg("prepare_secrets needs env_dir set")
@@ -302,15 +303,17 @@ func prepareSecrets(name string, proc config.Process, envDir string, log zerolog
 		log.Error().Err(err).Str("process_name", name).Str("env_dir", envDir).Msg("creating env dir")
 		return statusFailure
 	}
-	written := 0
-	for k, path := range buildEnv(proc, envDir, log) {
-		key, ok := strings.CutSuffix(k, "_FILE")
-		if !ok || key == "" {
-			continue
+	env := buildEnv(proc, envDir, log)
+	for _, varName := range proc.Secrets {
+		path, ok := env[varName]
+		if !ok || path == "" {
+			log.Error().Str("process_name", name).Str("var", varName).Msg("secret variable is unset")
+			return statusFailure
 		}
+		key := strings.TrimSuffix(varName, "_FILE")
 		data, err := os.ReadFile(path)
 		if err != nil {
-			log.Error().Err(err).Str("process_name", name).Str("var", k).Str("path", path).Msg("reading secret file")
+			log.Error().Err(err).Str("process_name", name).Str("var", varName).Str("path", path).Msg("reading secret file")
 			return statusFailure
 		}
 		tmp := filepath.Join(envDir, "."+key+".tmp")
@@ -323,9 +326,8 @@ func prepareSecrets(name string, proc config.Process, envDir string, log zerolog
 			return statusFailure
 		}
 		log.Info().Str("process_name", name).Str("var", key).Msg("secret prepared")
-		written++
 	}
-	log.Info().Str("process_name", name).Int("secrets", written).Msg("prepare_secrets done")
+	log.Info().Str("process_name", name).Int("secrets", len(proc.Secrets)).Msg("prepare_secrets done")
 	return statusSuccess
 }
 

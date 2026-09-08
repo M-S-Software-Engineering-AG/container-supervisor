@@ -134,13 +134,30 @@ func TestCronType(t *testing.T) {
 }
 
 func TestPrepareSecretsType(t *testing.T) {
-	p := writeYAML(t, "processes:\n  secrets:\n    type: prepare_secrets\n")
+	p := writeYAML(t, "processes:\n  secrets:\n    type: prepare_secrets\n    secrets: [DB_PASSWORD_FILE, TLS_KEY_FILE]\n")
 	cfg, err := Load(p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := cfg.Processes["secrets"].Type; got != TypePrepareSecrets {
 		t.Errorf("secrets.type: got %q want %q", got, TypePrepareSecrets)
+	}
+	if got := cfg.Processes["secrets"].Secrets; len(got) != 2 || got[0] != "DB_PASSWORD_FILE" {
+		t.Errorf("secrets.secrets: got %v", got)
+	}
+}
+
+func TestPrepareSecretsRequiresList(t *testing.T) {
+	p := writeYAML(t, "processes:\n  secrets:\n    type: prepare_secrets\n")
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for prepare_secrets without a secrets list, got nil")
+	}
+}
+
+func TestSecretsOnlyForPrepareSecrets(t *testing.T) {
+	p := writeYAML(t, "processes:\n  p:\n    path: /bin/p\n    type: one_shot\n    secrets: [X_FILE]\n")
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for secrets on a non-prepare_secrets type, got nil")
 	}
 }
 
