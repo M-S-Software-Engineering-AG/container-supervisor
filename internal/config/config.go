@@ -222,11 +222,7 @@ func Load(path string) (*Config, error) {
 		if proc.ForEach != nil && proc.Type != TypeOneShot {
 			return nil, fmt.Errorf("process %q: for_each is only valid for type one_shot", name)
 		}
-		if proc.Type == TypePrepareSecrets {
-			if len(proc.Secrets) == 0 {
-				return nil, fmt.Errorf("process %q: prepare_secrets requires a non-empty secrets list", name)
-			}
-		} else if proc.Secrets != nil {
+		if proc.Type != TypePrepareSecrets && proc.Secrets != nil {
 			return nil, fmt.Errorf("process %q: secrets is only valid for type prepare_secrets", name)
 		}
 		if proc.LogLevel != "" {
