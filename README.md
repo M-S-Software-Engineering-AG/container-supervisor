@@ -160,6 +160,7 @@ Per-process keys (`processes.<name>.*`):
 | `loglevel` | string | no | Overrides the global `loglevel` for this process's logger: `trace`, `debug`, `info`, `warn`, `error`. Validated at load. Defaults to the global level. |
 | `hide_label` | bool | no | Overrides the global `hide_labels` for this process. Drops the process name from its output: no `[name] ` prefix in console (lines start at column 0), in json a line that is already json is passed through untouched, anything else becomes a bare `{"message": ...}`. Defaults to `false`. |
 | `for_each` | list | no | Only valid for `one_shot`. Fan the process out into one instance per entry. Each entry is a row of `;`-separated fields; `{{N}}` (1-based) in `path`, `arguments`, and `environment` values is replaced with the Nth field. See [for_each](#for_each). |
+| `secrets` | list | for `prepare_secrets` | The `*_FILE` variable names to resolve. See [Preparing secrets](#preparing-secrets). |
 | `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service`, `cron`, or `ticker` — none is expected to exit, so the dependent would never start. |
 
 `on_failure` values depend on the process type:
@@ -199,16 +200,17 @@ Precedence, lowest to highest: the supervisor's own environment, then `env_dir` 
 ### Preparing secrets
 
 A `prepare_secrets` process is a built-in producer for the Docker/Compose `*_FILE`
-convention: for every `NAME_FILE` variable it sees pointing at a path, it reads
-that file and writes `env_dir/NAME`, so later processes get `$NAME` directly. It
-runs no external command (no `path` needed) and its value is the raw file
-contents, so multiline secrets pass through unchanged.
+convention. You list the `*_FILE` variables to resolve under `secrets`; for each
+`NAME_FILE` holding a path, it reads that file and writes `env_dir/NAME`, so
+later processes get `$NAME` directly. It runs no external command (no `path`
+needed) and the value is the raw file contents, so multiline secrets pass
+through unchanged.
 
 ```yaml
 processes:
   secrets:
     type: prepare_secrets
-    # sees DB_PASSWORD_FILE and TLS_KEY_FILE from the container environment
+    secrets: [DB_PASSWORD_FILE, TLS_KEY_FILE]
   app:
     type: service
     path: /app
@@ -216,9 +218,10 @@ processes:
       secrets: { exit: success }   # now sees $DB_PASSWORD and $TLS_KEY
 ```
 
-The `*_FILE` variables can come from the container's own environment (how Docker
-secrets are wired) or from the process's `environment:` block. As with any
-producer, gate consumers behind it with `depends_on`.
+The listed `*_FILE` variables can come from the container's own environment (how
+Docker secrets are wired) or from the process's `environment:` block. A listed
+variable that is unset, or whose file cannot be read, fails the process. As with
+any producer, gate consumers behind it with `depends_on`.
 
 ## Dependency semantics
 
