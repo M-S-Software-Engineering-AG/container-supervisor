@@ -161,7 +161,7 @@ Per-process keys (`processes.<name>.*`):
 | `hide_label` | bool | no | Overrides the global `hide_labels` for this process. Drops the process name from its output: no `[name] ` prefix in console (lines start at column 0), in json a line that is already json is passed through untouched, anything else becomes a bare `{"message": ...}`. Defaults to `false`. |
 | `for_each` | list | no | Only valid for `one_shot`. Fan the process out into one instance per entry. Each entry is a row of `;`-separated fields; `{{N}}` (1-based) in `path`, `arguments`, and `environment` values is replaced with the Nth field. See [for_each](#for_each). |
 | `secrets` | list | for `prepare_secrets` | The `*_FILE` variable names to resolve. See [Preparing secrets](#preparing-secrets). |
-| `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). The upstream may not be a `service`, `cron`, or `ticker` — none is expected to exit, so the dependent would never start. |
+| `depends_on` | map | no | Gate startup on upstream outcomes. Maps an upstream process name → `{ exit: <outcome> }`, where `<outcome>` is `success` (exit 0), `failure` (non-zero), or `any` (exited at all). Add `ignore_exit_when_disabled: true` to treat the condition as met when that upstream is `enabled: false`, so disabling it doesn't skip the dependent. The upstream may not be a `service`, `cron`, or `ticker` — none is expected to exit, so the dependent would never start. |
 
 `on_failure` values depend on the process type:
 
@@ -240,8 +240,10 @@ of the container. That is rejected at startup.
 
 A process with `enabled: false` never starts, whatever its type. Dependents see
 it as a `failure`: those requiring `exit: success` are skipped, those requiring
-`failure` or `any` proceed. Disabling never aborts the run, regardless of
-`on_failure`.
+`failure` or `any` proceed. A dependent can opt out with
+`ignore_exit_when_disabled: true`, which makes its `depends_on` condition pass
+regardless of `exit` when that upstream is disabled. Disabling never aborts the
+run, regardless of `on_failure`.
 
 The dependency graph is validated for cycles and unknown references before
 anything starts; a cycle or dangling reference is a fatal startup error.

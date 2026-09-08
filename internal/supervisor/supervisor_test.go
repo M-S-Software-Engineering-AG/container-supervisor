@@ -238,6 +238,24 @@ func TestRunDisabledReportsFailure(t *testing.T) {
 	}
 }
 
+func TestRunIgnoreExitWhenDisabled(t *testing.T) {
+	dir := t.TempDir()
+	order := filepath.Join(dir, "order")
+	off := config.Bool(false)
+
+	c := cfg(map[string]config.Process{
+		"off":     {Path: script(t, dir, "off", order, 0), Type: config.TypeOneShot, Enabled: &off},
+		"needsOK": {Path: script(t, dir, "needsOK", order, 0), Type: config.TypeOneShot, DependsOn: map[string]config.Dependency{"off": {Exit: "success", IgnoreExitWhenDisabled: true}}},
+	})
+
+	if err := Run(context.Background(), c, zerolog.Nop()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(order); string(got) != "needsOK\n" {
+		t.Fatalf("order = %q, want needsOK (dependency disabled, exit ignored)", got)
+	}
+}
+
 func TestRunFailFastCancelsSiblings(t *testing.T) {
 	dir := t.TempDir()
 	order := filepath.Join(dir, "order")
