@@ -147,10 +147,10 @@ func TestPrepareSecretsType(t *testing.T) {
 	}
 }
 
-func TestPrepareSecretsRequiresList(t *testing.T) {
+func TestPrepareSecretsEmptyListOK(t *testing.T) {
 	p := writeYAML(t, "processes:\n  secrets:\n    type: prepare_secrets\n")
-	if _, err := Load(p); err == nil {
-		t.Fatal("expected error for prepare_secrets without a secrets list, got nil")
+	if _, err := Load(p); err != nil {
+		t.Fatalf("empty secrets list should be allowed, got %v", err)
 	}
 }
 
