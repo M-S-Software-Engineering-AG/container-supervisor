@@ -122,6 +122,9 @@ func Run(parent context.Context, cfg *config.Config, log zerolog.Logger) error {
 					return
 				case <-dep.done:
 				}
+				if bool(cond.IgnoreExitWhenDisabled) && !cfg.Processes[depName].IsEnabled() {
+					continue
+				}
 				if !conditionMet(cond.Exit, dep.status) {
 					st.status = statusSkipped
 					log.Warn().Str("process_name", name).Str("dependency", depName).

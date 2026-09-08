@@ -113,7 +113,8 @@ func (p Process) RetryCount() int {
 }
 
 type Dependency struct {
-	Exit string `yaml:"exit"`
+	Exit                   string `yaml:"exit"`
+	IgnoreExitWhenDisabled Bool   `yaml:"ignore_exit_when_disabled"`
 }
 
 type Config struct {
