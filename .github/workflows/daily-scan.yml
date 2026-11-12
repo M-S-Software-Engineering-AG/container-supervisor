@@ -1,0 +1,19 @@
+name: Daily scan
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+      timezone: Europe/Zurich
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: '1'
