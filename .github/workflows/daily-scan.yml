@@ -11,11 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - run: echo "toolchain $(go env GOVERSION)" >> go.mod
       - uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_DETECTION_PRIORITY: comprehensive
         with:
           scan-type: fs
           scan-ref: .
