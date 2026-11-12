@@ -220,7 +220,8 @@ processes:
 
 The listed `*_FILE` variables can come from the container's own environment (how
 Docker secrets are wired) or from the process's `environment:` block. A listed
-variable that is unset, or whose file cannot be read, fails the process. As with
+variable that is unset, or whose file cannot be read, is logged as a warning
+and skipped; the process still succeeds. As with
 any producer, gate consumers behind it with `depends_on`.
 
 ## Dependency semantics

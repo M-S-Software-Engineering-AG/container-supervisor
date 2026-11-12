@@ -310,14 +310,14 @@ func prepareSecrets(name string, proc config.Process, envDir string, log zerolog
 	for _, varName := range proc.Secrets {
 		path, ok := env[varName]
 		if !ok || path == "" {
-			log.Error().Str("process_name", name).Str("var", varName).Msg("secret variable is unset")
-			return statusFailure
+			log.Warn().Str("process_name", name).Str("var", varName).Msg("secret variable is unset, skipping")
+			continue
 		}
 		key := strings.TrimSuffix(varName, "_FILE")
 		data, err := os.ReadFile(path)
 		if err != nil {
-			log.Error().Err(err).Str("process_name", name).Str("var", varName).Str("path", path).Msg("reading secret file")
-			return statusFailure
+			log.Warn().Err(err).Str("process_name", name).Str("var", varName).Str("path", path).Msg("reading secret file, skipping")
+			continue
 		}
 		tmp := filepath.Join(envDir, "."+key+".tmp")
 		if err := os.WriteFile(tmp, data, 0o600); err != nil {
