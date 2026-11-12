@@ -184,19 +184,27 @@ func TestPrepareSecrets(t *testing.T) {
 	}
 }
 
-func TestPrepareSecretsMissingFileFails(t *testing.T) {
-	envDir := t.TempDir()
-	proc := config.Process{Type: config.TypePrepareSecrets, Secrets: []string{"GONE_FILE"}, Env: map[string]string{"GONE_FILE": "/no/such/path"}}
-	if status := prepareSecrets("secrets", proc, envDir, zerolog.Nop()); status != statusFailure {
-		t.Fatalf("status = %q, want %q", status, statusFailure)
+func TestPrepareSecretsSkipsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	envDir := filepath.Join(dir, "env")
+	okFile := filepath.Join(dir, "ok")
+	if err := os.WriteFile(okFile, []byte("v"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestPrepareSecretsUnsetVarFails(t *testing.T) {
-	envDir := t.TempDir()
-	proc := config.Process{Type: config.TypePrepareSecrets, Secrets: []string{"MISSING_FILE"}}
-	if status := prepareSecrets("secrets", proc, envDir, zerolog.Nop()); status != statusFailure {
-		t.Fatalf("status = %q, want %q", status, statusFailure)
+	proc := config.Process{
+		Type:    config.TypePrepareSecrets,
+		Secrets: []string{"MISSING_FILE", "GONE_FILE", "OK_FILE"},
+		Env:     map[string]string{"GONE_FILE": "/no/such/path", "OK_FILE": okFile},
+	}
+	if status := prepareSecrets("secrets", proc, envDir, zerolog.Nop()); status != statusSuccess {
+		t.Fatalf("status = %q, want %q", status, statusSuccess)
+	}
+	env := readEnvDir(envDir, zerolog.Nop())
+	if env["OK"] != "v" {
+		t.Fatalf("OK = %q, want %q", env["OK"], "v")
+	}
+	if _, ok := env["GONE"]; ok {
+		t.Fatal("GONE should not be written")
 	}
 }
 

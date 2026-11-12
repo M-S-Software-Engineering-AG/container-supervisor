@@ -1,0 +1,18 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "baseBranchPatterns": ["$default", "/^release\\/.+/"],
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "automerge": true,
+    "labels": ["security"]
+  },
+  "packageRules": [
+    {
+      "description": "LTS branches only receive security fixes",
+      "matchBaseBranches": ["/^release\\/.+/"],
+      "enabled": false
+    }
+  ]
+}
