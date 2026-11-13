@@ -1,6 +1,6 @@
 module github.com/jehuda-ruzinski/container-supervisor
 
-go 1.27.2
+go 1.27.4
 
 require (
 	github.com/BaseCrusher/envelope v1.0.0
