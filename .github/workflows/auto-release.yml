@@ -1,0 +1,44 @@
+name: Auto release
+
+on:
+  push:
+    branches: [main, 'release/**']
+
+# ponytail: GitHub keeps only one pending run per group; a merge landing while another is queued
+# gets no release of its own, its change ships in the next one.
+concurrency:
+  group: auto-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}  # tags are pushed as the GitHub App so release.yml triggers
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: app
+        with:
+          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_KEY }}
+      - name: Only for merged Renovate PRs
+        id: check
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].head.ref // ""')
+          [[ "$ref" == renovate/* ]] && echo "renovate=true" >> "$GITHUB_OUTPUT" || echo "not a Renovate merge ($ref), skipping"
+      - uses: actions/checkout@v7
+        if: steps.check.outputs.renovate
+        with:
+          fetch-depth: 0  # need tags to find the current version
+          token: ${{ steps.app.outputs.token }}
+      - name: Tag next patch version
+        if: steps.check.outputs.renovate
+        run: |
+          latest=$(git describe --tags --abbrev=0 --match 'v*')  # newest tag on this branch
+          IFS=. read -r major minor patch <<< "${latest#v}"
+          next="v${major}.${minor}.$((patch + 1))"
+          echo "$latest -> $next"
+          git tag "$next"
+          git push origin "$next"
