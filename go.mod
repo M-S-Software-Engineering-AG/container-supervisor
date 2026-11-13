@@ -3,7 +3,7 @@ module github.com/jehuda-ruzinski/container-supervisor
 go 1.27.4
 
 require (
-	github.com/BaseCrusher/envelope v1.0.0
+	github.com/BaseCrusher/envelope v1.2.0
 	github.com/mattn/go-isatty v0.0.24
 	github.com/rs/zerolog v1.35.1
 	gopkg.in/yaml.v3 v3.0.1
