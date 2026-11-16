@@ -4,13 +4,11 @@ on:
   push:
     branches: [main, 'release/**']
 
-# ponytail: GitHub keeps only one pending run per group; a merge landing while another is queued
-# gets no release of its own, its change ships in the next one.
 concurrency:
   group: auto-release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions: {}  # tags are pushed as the GitHub App so release.yml triggers
+permissions: {}
 
 jobs:
   tag:
@@ -27,16 +25,24 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           ref=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].head.ref // ""')
-          [[ "$ref" == renovate/* ]] && echo "renovate=true" >> "$GITHUB_OUTPUT" || echo "not a Renovate merge ($ref), skipping"
+          [[ "$ref" == renovate/* ]] || { echo "not a Renovate merge ($ref), skipping"; exit 0; }
+          pending=$(gh pr list -R "$GITHUB_REPOSITORY" --base "$GITHUB_REF_NAME" --state open \
+            --json headRefName,statusCheckRollup \
+            --jq '[.[] | select(.headRefName | startswith("renovate/"))
+                   | select(any(.statusCheckRollup[]; (.conclusion // .state) | IN("FAILURE","ERROR","CANCELLED","TIMED_OUT")) | not)] | length')
+          [[ "$pending" == 0 ]] && echo "renovate=true" >> "$GITHUB_OUTPUT" || echo "$pending Renovate PR(s) still open, deferring release"
       - uses: actions/checkout@v7
         if: steps.check.outputs.renovate
         with:
-          fetch-depth: 0  # need tags to find the current version
+          fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
       - name: Tag next patch version
         if: steps.check.outputs.renovate
         run: |
-          latest=$(git describe --tags --abbrev=0 --match 'v*')  # newest tag on this branch
+          latest=$(git describe --tags --abbrev=0 --match 'v*')
+          if git diff --quiet "$latest" HEAD -- . ':!.github'; then
+            echo "no source changes since $latest, skipping"; exit 0
+          fi
           IFS=. read -r major minor patch <<< "${latest#v}"
           next="v${major}.${minor}.$((patch + 1))"
           echo "$latest -> $next"
