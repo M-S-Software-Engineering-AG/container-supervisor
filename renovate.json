@@ -4,6 +4,7 @@
   "baseBranchPatterns": ["$default", "/^release\\/.+/"],
   "dependencyDashboard": false,
   "automerge": true,
+  "rebaseWhen": "behind-base-branch",
   "platformAutomerge": false,
   "osvVulnerabilityAlerts": true,
   "vulnerabilityAlerts": {
