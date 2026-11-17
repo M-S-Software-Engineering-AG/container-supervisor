@@ -127,7 +127,7 @@ SUPERVISOR_PROCESSES__MIGRATE__ARGUMENTS__0=--dry-run
 SUPERVISOR_PROCESSES__MIGRATE__ARGUMENTS__1="--limit 10"
 ```
 
-The name-to-YAML conversion is [envelope](https://github.com/BaseCrusher/envelope);
+The name-to-YAML conversion is [env2yml](https://github.com/M-S-Software-Engineering-AG/env2yml);
 see its README for the full naming rules (list indexes, escaping a key that
 looks like an index). Names are case-insensitive here — the part after
 `SUPERVISOR_` is lowered to match the YAML keys.

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BaseCrusher/envelope"
+	"github.com/M-S-Software-Engineering-AG/env2yml"
 	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 )
@@ -500,7 +500,7 @@ func applyEnv(m map[string]any) error {
 		environ = append(environ, envPrefix+strings.ToLower(rest)+"="+value)
 	}
 
-	doc, err := envelope.Parse(environ, envPrefix)
+	doc, err := env2yml.Parse(environ, envPrefix)
 	if err != nil {
 		return fmt.Errorf("environment: %w", err)
 	}

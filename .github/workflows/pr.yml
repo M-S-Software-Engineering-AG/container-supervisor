@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - run: go vet ./...
       - run: go test ./...
 
   # The only required check in the ruleset. Add new jobs to `needs`; jobs skipped via `if:` don't fail it.
