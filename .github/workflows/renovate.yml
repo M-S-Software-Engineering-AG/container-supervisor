@@ -7,6 +7,10 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # Merge Renovate PRs as soon as CI is green instead of waiting for the next schedule
+  workflow_run:
+    workflows: [PR]
+    types: [completed]
 
 concurrency:
   group: renovate
@@ -16,6 +20,12 @@ permissions: {}  # Renovate acts as the GitHub App, not GITHUB_TOKEN
 
 jobs:
   renovate:
+    # Only a trigger filter, not a security gate: the org ruleset protect-renovate-branches lets only the app push renovate/**
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'pull_request' &&
+       startsWith(github.event.workflow_run.head_branch, 'renovate/'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/create-github-app-token@v3
