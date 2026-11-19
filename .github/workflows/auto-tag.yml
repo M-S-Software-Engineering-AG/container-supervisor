@@ -4,53 +4,9 @@ on:
   push:
     branches: ['release/**']
 
-concurrency:
-  group: auto-tag-${{ github.ref }}
-  cancel-in-progress: false
-
 permissions: {}
 
 jobs:
   tag:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/create-github-app-token@v3
-        id: app
-        with:
-          client-id: ${{ vars.AUTOMATION_APP_CLIENT_ID }}
-          private-key: ${{ secrets.AUTOMATION_APP_KEY }}
-      - name: Batch Renovate merges
-        id: check
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: |
-          ref=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].head.ref // ""')
-          if [[ "$ref" == renovate/* ]]; then
-            pending=$(gh pr list -R "$GITHUB_REPOSITORY" --base "$GITHUB_REF_NAME" --state open \
-              --json headRefName,statusCheckRollup \
-              --jq '[.[] | select(.headRefName | startswith("renovate/"))
-                     | select(any(.statusCheckRollup[]; (.conclusion // .state) | IN("FAILURE","ERROR","CANCELLED","TIMED_OUT")) | not)] | length')
-            [[ "$pending" == 0 ]] || { echo "$pending Renovate PR(s) still open, deferring release"; exit 0; }
-          fi
-          echo "release=true" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
-        if: steps.check.outputs.release
-        with:
-          fetch-depth: 0
-          token: ${{ steps.app.outputs.token }}
-      - name: Tag next version
-        if: steps.check.outputs.release
-        run: |
-          line=${GITHUB_REF_NAME#release/}
-          if latest=$(git describe --tags --abbrev=0 --match "v$line.*" 2>/dev/null); then
-            if git diff --quiet "$latest" HEAD -- '*.go' ':!*_test.go' go.mod go.sum; then
-              echo "no source changes since $latest, skipping"; exit 0
-            fi
-            next="v$line.$((${latest##*.} + 1))"
-          else
-            latest="no v$line tag"
-            next="v$line.0"
-          fi
-          echo "$latest -> $next"
-          git tag "$next"
-          git push origin "$next"
+    uses: M-S-Software-Engineering-AG/ci-workflows/.github/workflows/go-auto-tag.yml@main
+    secrets: inherit

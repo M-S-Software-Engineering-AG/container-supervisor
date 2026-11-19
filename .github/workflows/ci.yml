@@ -1,24 +1,17 @@
-name: PR
+name: CI
 
 on:
   pull_request:
     branches: [main, 'release/**']
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - run: go vet ./...
-      - run: go test ./...
+  go:
+    uses: M-S-Software-Engineering-AG/ci-workflows/.github/workflows/go-pr.yml@main
 
   # The only required check in the ruleset. Add new jobs to `needs`; jobs skipped via `if:` don't fail it.
   ci-ok:
     if: always()
-    needs: [test]
+    needs: [go]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if a required job failed
